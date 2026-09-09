@@ -359,6 +359,10 @@ class LichessBot:
             logger.error("game %s: could not load maia-%d (%s), keeping maia-%d",
                          game_id, maia_rating, exc, self.human_model.rating)
             maia_rating = self.human_model.rating
+        # The book bands off the same rating: traps the opponent is likely to
+        # see through are simply not offered.
+        if self.searcher.book is not None:
+            self.searcher.book.set_opponent_rating(opponent_rating)
 
         logger.info(
             "game %s: playing %s against %s (%d) -> opponent model maia-%d",
@@ -502,6 +506,7 @@ def main() -> int:
     import berserk
 
     from src.engine import MaiaEvaluator, StockfishEvaluator
+    from src.engine.book import OpeningBook
 
     parser = argparse.ArgumentParser(prog="python -m src.lichess.bot", description="Lichess bot bridge.")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
@@ -525,10 +530,14 @@ def main() -> int:
     session = berserk.TokenSession(token)
     client = berserk.Client(session=session)
 
-    with StockfishEvaluator() as stockfish, MaiaEvaluator(engine_config.DEFAULT_MAIA_RATING) as maia:
+    with (
+        StockfishEvaluator() as stockfish,
+        MaiaEvaluator(engine_config.DEFAULT_MAIA_RATING) as maia,
+        OpeningBook() as book,
+    ):
         bot = LichessBot(
             client,
-            AdversarialSearcher(stockfish, maia),
+            AdversarialSearcher(stockfish, maia, book=book),
             maia,
             config=BotConfig(min_initial_seconds=args.min_clock),
         )
@@ -537,6 +546,7 @@ def main() -> int:
         except KeyboardInterrupt:
             logger.info("lichess: interrupted, shutting down")
             bot.stop()
+    logger.info("lichess: engine processes terminated, books unmapped")
     return 0
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from enum import Enum
 from types import MappingProxyType
 from typing import Mapping, Optional, Sequence
 
@@ -20,6 +21,7 @@ from src.config import MATE_SCORE_CP, PROBABILITY_SUM_TOLERANCE, WIN_PROBABILITY
 
 __all__ = [
     "CandidateStats",
+    "MoveSource",
     "EngineEval",
     "MoveDistribution",
     "PredictedReply",
@@ -124,6 +126,15 @@ class MoveDistribution:
         return max(self.probabilities, key=lambda move: self.probabilities[move])
 
 
+class MoveSource(Enum):
+    """Where a played move came from. Drives telemetry, not decisions."""
+
+    SEARCH = "search"
+    MATE_IN_ONE = "mate-in-1"
+    BOOK_TRAP = "trap-book"
+    BOOK_STANDARD = "standard-book"
+
+
 @dataclass(frozen=True, slots=True)
 class SearchConfig:
     """Tuning knobs for :class:`~src.engine.search.AdversarialSearcher`.
@@ -146,6 +157,13 @@ class SearchConfig:
             than ``leaf_depth``: the root scan only has to rank candidates, while
             leaves decide utility and safety. MultiPV cost grows steeply with depth.
         leaf_depth: Depth for each expectimax leaf evaluation.
+        book_safety_threshold: Deliberately looser floor for *book* moves. A
+            search-invented trap has nothing vouching for it, so it must clear
+            ``safety_threshold``; a curated gambit has a human accepting its
+            objective cost up front, and the measured cost of a real trap
+            repertoire runs to roughly -250cp (Halloween, Englund, Stafford).
+            This floor exists to catch a corrupt or wrong-sided book entry, not
+            to second-guess the repertoire.
         cache_size: Maximum entries held by the transposition cache.
     """
 
@@ -157,6 +175,7 @@ class SearchConfig:
     max_replies: int = 6
     root_depth: int = 10
     leaf_depth: int = 12
+    book_safety_threshold: int = 300
     cache_size: int = 100_000
 
     def __post_init__(self) -> None:
@@ -172,6 +191,8 @@ class SearchConfig:
             raise ValueError("max_candidates and max_replies must be >= 1")
         if self.root_depth < 1 or self.leaf_depth < 1:
             raise ValueError("search depths must be >= 1")
+        if self.book_safety_threshold < 0:
+            raise ValueError("book_safety_threshold must be non-negative")
         if self.cache_size < 1:
             raise ValueError("cache_size must be >= 1")
 
@@ -241,11 +262,17 @@ class SearchResult:
 
     duration_ms: float
 
+    source: MoveSource = MoveSource.SEARCH
+    """Which mechanism produced the move. ``is_trap`` describes the *search's*
+    reasoning and stays False for book moves, so this is the field to read when
+    asking "did that come from the book?"."""
+
     def summary(self) -> str:
         """One-line human-readable digest, used for logging and test output."""
-        tags = "".join(t for t, on in (("TRAP", self.is_trap), ("FALLBACK", self.fallback_triggered)) if on)
+        tags = [self.source.value] if self.source is not MoveSource.SEARCH else []
+        tags += [t for t, on in (("TRAP", self.is_trap), ("FALLBACK", self.fallback_triggered)) if on]
         return (
             f"{self.move.uci()} utility={self.expected_utility:+.1f}cp "
             f"candidates={len(self.candidates)} nodes={self.nodes_evaluated} "
-            f"{self.duration_ms:.0f}ms {tags}".strip()
+            f"{self.duration_ms:.0f}ms {' '.join(tags)}".strip()
         )

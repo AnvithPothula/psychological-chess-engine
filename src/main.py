@@ -18,6 +18,7 @@ import chess
 
 from src.config import AVAILABLE_MAIA_RATINGS, DEFAULT_MAIA_RATING
 from src.engine import EvaluatorError, MaiaEvaluator, StockfishEvaluator
+from src.engine.book import OpeningBook
 from src.engine.search import AdversarialSearcher
 from src.types import SearchConfig
 from src.ui.app import ChessApp
@@ -44,6 +45,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Colour you play (default: %(default)s).",
     )
     parser.add_argument(
+        "--my-rating",
+        type=int,
+        default=None,
+        help="Your rating, used to band the trap book (default: same as --rating).",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
@@ -67,8 +74,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     assets.ensure_assets()
 
     try:
-        with StockfishEvaluator() as stockfish, MaiaEvaluator(rating=args.rating) as maia:
-            searcher = AdversarialSearcher(stockfish, maia, config=SearchConfig())
+        with (
+            StockfishEvaluator() as stockfish,
+            MaiaEvaluator(rating=args.rating) as maia,
+            OpeningBook(opponent_rating=args.my_rating or args.rating) as book,
+        ):
+            searcher = AdversarialSearcher(stockfish, maia, config=SearchConfig(), book=book)
             logger.info(
                 "starting: you are %s against Maia-%d", args.color, args.rating
             )
@@ -84,7 +95,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except EvaluatorError as exc:
         logger.error("engine failure: %s", exc)
         return 1
-    logger.info("clean shutdown: engine processes terminated")
+    logger.info("clean shutdown: engine processes terminated, books unmapped")
     return 0
 
 

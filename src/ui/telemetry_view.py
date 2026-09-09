@@ -13,7 +13,7 @@ from typing import Final, Optional, Sequence, Tuple
 import chess
 import pygame
 
-from src.types import CandidateStats, EngineEval, SearchResult
+from src.types import CandidateStats, EngineEval, MoveSource, SearchResult
 from src.ui.constants import (
     ACCENT_FALLBACK,
     ACCENT_NEGATIVE,
@@ -269,6 +269,14 @@ class TelemetryView:
 
     @staticmethod
     def _badge_for(result: SearchResult) -> Tuple[str, RGB]:
+        # Book provenance wins: a Stafford Gambit move badged "OBJECTIVE BEST"
+        # would be actively misleading, and is_trap is False for every book move.
+        if result.source is MoveSource.BOOK_TRAP:
+            return "TRAP BOOK", ACCENT_TRAP
+        if result.source is MoveSource.BOOK_STANDARD:
+            return "OPENING BOOK", ACCENT_FALLBACK
+        if result.source is MoveSource.MATE_IN_ONE:
+            return "MATE IN 1", ACCENT_TRAP
         if result.fallback_triggered:
             return "MINIMAX FALLBACK", ACCENT_FALLBACK
         if result.is_trap:

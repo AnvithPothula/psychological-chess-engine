@@ -7,6 +7,9 @@ competent opponent refutes is never played.
 
 One search does:
 
+0. **Book probe.** If a book move exists for the position it is played straight
+   away, skipping every engine call but one. See :meth:`AdversarialSearcher._try_book`
+   for why that one call is not optional.
 1. **Root scan.** One Stockfish MultiPV search scores every legal move. Moves
    within ``root_margin`` of the best are candidates, capped at ``max_candidates``.
    Stockfish's own best move is always first in that list, so it is always
@@ -45,11 +48,13 @@ import chess
 
 from src import config as engine_config
 from src.engine import EvaluatorError
+from src.engine.book import OpeningBook
 from src.engine.cache import EvalCache, position_key
 from src.types import (
     CandidateStats,
     EngineEval,
     MoveDistribution,
+    MoveSource,
     PredictedReply,
     SearchConfig,
     SearchResult,
@@ -133,11 +138,13 @@ class AdversarialSearcher:
         *,
         config: Optional[SearchConfig] = None,
         cache: Optional[EvalCache] = None,
+        book: Optional[OpeningBook] = None,
     ) -> None:
         self.evaluator = evaluator
         self.human_model = human_model
         self.config = config if config is not None else SearchConfig()
         self.cache = cache if cache is not None else EvalCache(self.config.cache_size)
+        self.book = book
 
     def search(self, board: chess.Board, config: Optional[SearchConfig] = None) -> SearchResult:
         """Choose a move for the side to move in ``board``.
@@ -166,7 +173,12 @@ class AdversarialSearcher:
                 candidates=(),
                 nodes_evaluated=0,
                 duration_ms=(time.perf_counter() - started) * 1000.0,
+                source=MoveSource.MATE_IN_ONE,
             )
+
+        from_book = self._try_book(work, bot_color, settings, started)
+        if from_book is not None:
+            return from_book
 
         root_scores, best_move = self._scan_root(work, bot_color, settings)
         candidates = self._select_candidates(root_scores, best_move, settings)
@@ -235,6 +247,64 @@ class AdversarialSearcher:
             cache_stats.evictions,
         )
         return result
+
+    # -- book ---------------------------------------------------------------
+
+    def _try_book(
+        self,
+        board: chess.Board,
+        bot_color: chess.Color,
+        settings: SearchConfig,
+        started: float,
+    ) -> Optional[SearchResult]:
+        """Play a book move, if one exists and clears the book safety floor.
+
+        The validation is the point. A book move otherwise bypasses every safety
+        guarantee this module makes: the whole apparatus that refuses a trap the
+        opponent can refute does not run, because no search runs. A curated
+        gambit accepts a *known* objective cost -- measured across this
+        repertoire, the worst is around -250cp -- but a wrong-sided entry, a
+        stale line or a corrupt file costs an unknown one, and there would be
+        nothing to catch it. One evaluation at ``leaf_depth`` is roughly 2% of a
+        full search, which is a cheap price for not gifting away games.
+
+        A rejected book move falls through to the normal search rather than
+        trying the next book entry: if the repertoire is wrong here, the search
+        is the thing that is trusted to be right.
+        """
+        if self.book is None or self.book.is_empty:
+            return None
+        candidate = self.book.probe(board)
+        if candidate is None:
+            return None
+
+        board.push(candidate.move)
+        try:
+            objective = self._evaluate_bot(board, bot_color, settings.leaf_depth)
+        finally:
+            board.pop()
+
+        if objective < -settings.book_safety_threshold:
+            logger.warning(
+                "book: rejected %s from the %s book (%+dcp, past the -%dcp floor), searching instead",
+                candidate.move.uci(), candidate.source.value, objective, settings.book_safety_threshold,
+            )
+            return None
+
+        logger.info(
+            "book: playing %s from the %s book (weight %d, objective %+dcp)",
+            candidate.move.uci(), candidate.source.value, candidate.weight, objective,
+        )
+        return SearchResult(
+            move=candidate.move,
+            expected_utility=float(objective),
+            is_trap=False,
+            fallback_triggered=False,
+            candidates=(),
+            nodes_evaluated=1,  # the safety probe; not free, so not reported as free
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            source=candidate.source,
+        )
 
     # -- root ---------------------------------------------------------------
 

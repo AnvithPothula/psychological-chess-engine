@@ -45,6 +45,11 @@ LC0_POLICY_TEMPERATURE: Final[float] = 1.0
 # sharpens (more deterministic opponent model).
 DEFAULT_MAIA_TEMPERATURE: Final[float] = 1.0
 
+# --- Opening books ---------------------------------------------------------
+BOOKS_DIR: Final[Path] = PROJECT_ROOT / "src" / "engine" / "books"
+TRAP_BOOK_ENV_VAR: Final[str] = "TRAP_BOOK_PATH"
+STANDARD_BOOK_ENV_VAR: Final[str] = "STANDARD_BOOK_PATH"
+
 # --- Lichess ---------------------------------------------------------------
 LICHESS_TOKEN_ENV_VAR: Final[str] = "LICHESS_API_TOKEN"
 
@@ -85,6 +90,16 @@ def stockfish_binary() -> Path:
 def lc0_binary() -> Path:
     """Absolute path to the Lc0 executable used to host the Maia weights."""
     return _resolve_binary(LC0_ENV_VAR, "lc0")
+
+
+def trap_book_path() -> Path:
+    """Curated gambit book, tried first. Missing is fine; the book degrades to empty."""
+    return Path(os.environ.get(TRAP_BOOK_ENV_VAR, BOOKS_DIR / "traps.bin")).expanduser()
+
+
+def standard_book_path() -> Path:
+    """Broad GM book, used when the trap book has nothing for the position."""
+    return Path(os.environ.get(STANDARD_BOOK_ENV_VAR, BOOKS_DIR / "standard.bin")).expanduser()
 
 
 def lichess_token() -> str:
