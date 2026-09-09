@@ -15,13 +15,20 @@ class EngineAnalysisError(EvaluatorError):
     """The engine started but produced unusable or no output for a position."""
 
 
-from src.engine.maia import MaiaEvaluator  # noqa: E402  (re-export; avoids an import cycle)
+# Re-exported below the exception definitions: the submodules import those names
+# back out of this package, so they must exist before the submodules load.
+from src.engine.cache import EvalCache  # noqa: E402
+from src.engine.maia import MaiaEvaluator  # noqa: E402
 from src.engine.stockfish import StockfishEvaluator  # noqa: E402
+from src.engine.search import AdversarialSearcher, TerminalPositionError  # noqa: E402
 
 __all__ = [
+    "AdversarialSearcher",
     "EngineAnalysisError",
     "EngineInitializationError",
+    "EvalCache",
     "EvaluatorError",
     "MaiaEvaluator",
     "StockfishEvaluator",
+    "TerminalPositionError",
 ]

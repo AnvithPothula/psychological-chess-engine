@@ -5,7 +5,7 @@ from __future__ import annotations
 import atexit
 from pathlib import Path
 from types import TracebackType
-from typing import Optional, Type
+from typing import Dict, Optional, Type
 
 import chess
 import chess.engine
@@ -73,6 +73,48 @@ class StockfishEvaluator:
         if score is None:
             raise EngineAnalysisError(f"Stockfish returned no score for {board.fen()}")
         return EngineEval.from_pov_score(score)
+
+    def analyse_root_moves(
+        self,
+        board: chess.Board,
+        *,
+        depth: int = config.DEFAULT_STOCKFISH_DEPTH,
+        multipv: Optional[int] = None,
+    ) -> Dict[chess.Move, EngineEval]:
+        """Score every legal move of ``board`` in a single MultiPV search.
+
+        One MultiPV search shares its tree across all root moves, so this is far
+        cheaper than evaluating each child separately -- but MultiPV cost grows
+        steeply with depth, since Stockfish may not prune root moves away. Keep
+        the depth here below the depth used for individual leaf evaluations.
+
+        Returns White-relative evaluations keyed by root move. Each score is the
+        minimax value of the resulting position, not a static evaluation.
+        """
+        if depth < 1:
+            raise ValueError(f"depth must be >= 1, got {depth}")
+        legal_moves = list(board.legal_moves)
+        if not legal_moves:
+            raise EngineAnalysisError(f"No legal moves to analyse in {board.fen()}")
+        engine = self._require_engine()
+        lines = multipv if multipv is not None else len(legal_moves)
+
+        try:
+            infos = engine.analyse(board, chess.engine.Limit(depth=depth), multipv=lines)
+        except (chess.engine.EngineError, chess.engine.EngineTerminatedError, TimeoutError) as exc:
+            raise EngineAnalysisError(f"Stockfish MultiPV failed on {board.fen()}: {exc}") from exc
+
+        scored: Dict[chess.Move, EngineEval] = {}
+        for info in infos:
+            pv = info.get("pv")
+            score = info.get("score")
+            if not pv or score is None:
+                continue
+            scored[pv[0]] = EngineEval.from_pov_score(score)
+
+        if not scored:
+            raise EngineAnalysisError(f"Stockfish MultiPV returned no scored moves for {board.fen()}")
+        return scored
 
     def close(self) -> None:
         """Terminate the engine process. Idempotent and safe to call from atexit."""
