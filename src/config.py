@@ -45,6 +45,9 @@ LC0_POLICY_TEMPERATURE: Final[float] = 1.0
 # sharpens (more deterministic opponent model).
 DEFAULT_MAIA_TEMPERATURE: Final[float] = 1.0
 
+# --- Lichess ---------------------------------------------------------------
+LICHESS_TOKEN_ENV_VAR: Final[str] = "LICHESS_API_TOKEN"
+
 # --- Shared ----------------------------------------------------------------
 ENGINE_STARTUP_TIMEOUT: Final[float] = 30.0
 WIN_PROBABILITY_SCALE: Final[float] = 400.0
@@ -82,6 +85,30 @@ def stockfish_binary() -> Path:
 def lc0_binary() -> Path:
     """Absolute path to the Lc0 executable used to host the Maia weights."""
     return _resolve_binary(LC0_ENV_VAR, "lc0")
+
+
+def lichess_token() -> str:
+    """The Lichess bot API token from the environment.
+
+    Never accepted as a command-line argument: tokens on an argv line leak into
+    shell history and process listings.
+    """
+    token = os.environ.get(LICHESS_TOKEN_ENV_VAR, "").strip()
+    if not token:
+        raise RuntimeError(
+            f"{LICHESS_TOKEN_ENV_VAR} is unset. Create a token with the 'bot:play' scope at "
+            "https://lichess.org/account/oauth/token and export it before starting the bridge."
+        )
+    return token
+
+
+def nearest_maia_rating(rating: int) -> int:
+    """The closest available Maia checkpoint to an opponent rating.
+
+    Ties break downward -- modelling an opponent as slightly weaker than they are
+    costs less than assuming they will find the refutation.
+    """
+    return min(AVAILABLE_MAIA_RATINGS, key=lambda available: (abs(available - rating), available))
 
 
 def maia_weights(rating: int = DEFAULT_MAIA_RATING) -> Path:

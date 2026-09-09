@@ -94,6 +94,10 @@ class MaiaEvaluator:
         self.rating = rating
         self.temperature = temperature
         self.weights_path = weights if weights is not None else config.maia_weights(rating)
+        # Identity token handed to python-chess as the ``game`` argument. Changing
+        # it makes python-chess emit ``ucinewgame``, which is what forces lc0 to
+        # actually adopt newly configured weights -- see set_rating().
+        self._game_token: object = object()
         path = binary if binary is not None else config.lc0_binary()
 
         try:
@@ -146,7 +150,9 @@ class MaiaEvaluator:
         priors: Dict[chess.Move, float] = {}
 
         try:
-            with engine.analysis(board, chess.engine.Limit(nodes=config.MAIA_SEARCH_NODES)) as analysis:
+            with engine.analysis(
+                board, chess.engine.Limit(nodes=config.MAIA_SEARCH_NODES), game=self._game_token
+            ) as analysis:
                 for info in analysis:
                     line = info.get("string")
                     if not isinstance(line, str):
@@ -179,6 +185,30 @@ class MaiaEvaluator:
         if move not in legal_moves:
             return None
         return move, float(match.group("prior")) / 100.0
+
+    def set_rating(self, rating: int) -> None:
+        """Load a different Maia checkpoint into the running Lc0 process.
+
+        Setting ``WeightsFile`` alone is **not enough**: Lc0 keeps serving the
+        previously loaded network's policy for any position it has already seen
+        in the current game, so a swap looks like it worked on fresh positions
+        and silently does nothing on repeated ones -- opening positions, which is
+        every position that matters when swapping between games. Rotating the
+        game token makes python-chess send ``ucinewgame``, which is what makes
+        the new weights take effect everywhere.
+        """
+        if rating == self.rating:
+            return
+        weights = config.maia_weights(rating)
+        engine = self._require_engine()
+        try:
+            engine.configure({"WeightsFile": str(weights)})
+        except (chess.engine.EngineError, chess.engine.EngineTerminatedError) as exc:
+            raise EngineInitializationError(f"Could not load Maia weights {weights}: {exc}") from exc
+
+        self._game_token = object()
+        self.rating = rating
+        self.weights_path = weights
 
     def close(self) -> None:
         """Terminate the Lc0 process. Idempotent and safe to call from atexit."""

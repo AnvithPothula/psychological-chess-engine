@@ -90,7 +90,7 @@ def _ssl_context() -> ssl.SSLContext:
     system bundle, then the default.
     """
     try:
-        import certifi  # type: ignore[import-not-found]
+        import certifi
 
         return ssl.create_default_context(cafile=certifi.where())
     except ImportError:
