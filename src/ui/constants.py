@@ -106,6 +106,13 @@ engine time with the search that decides the actual move."""
 
 UTILITY_METER_CLAMP_CP: Final[float] = 400.0
 TOP_REPLIES_SHOWN: Final[int] = 3
+TRAINING_WINDOW_TITLE: Final[str] = "Self-Play Trap Mining"
+ELO_METER_SPAN: Final[float] = 400.0
+"""Elo either side of the starting rating that the drift meter spans."""
+HAZARD_METER_SEGMENTS: Final[int] = 20
+ROLLOUT_QUEUE_LIMIT: Final[int] = 256
+"""Snapshots buffered for the viewer. The generator never blocks on a full
+queue -- dropping a frame is correct, stalling the rollout is not."""
 WORKER_JOIN_TIMEOUT: Final[float] = 5.0
 ASSET_DOWNLOAD_TIMEOUT: Final[float] = 30.0
 ASSET_DOWNLOAD_DELAY: Final[float] = 0.6
