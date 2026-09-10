@@ -9,6 +9,7 @@ than against whatever happens to be shipped in ``src/engine/books``.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import tempfile
@@ -254,25 +255,43 @@ def test_band_mask_narrows_the_repertoire_as_rating_rises() -> None:
                 reader.close()
             offered[rating] = live
 
-    assert offered[1100] > offered[1900], f"repertoire must shrink with rating: {offered}"
-    assert offered[1100] >= offered[1500] >= offered[1900], f"must shrink monotonically: {offered}"
+    assert offered[1100] > offered[1900], f"repertoire must be smaller at the top: {offered}"
+    # Deliberately not monotone. Empirical calibration adds lines in the middle
+    # bands that underperform low down: the Smith-Morra opens below 50% in the
+    # weak brackets and only clears the threshold from 1600 up.
     print(f"    entries offered: 1100={offered[1100]} 1500={offered[1500]} 1900={offered[1900]}")
 
 
-def test_unsound_traps_switch_off_before_sound_gambits_do() -> None:
-    masks = {line.name: line for line in TRAP_LINES}
-    board = chess.Board()
-    for san in ("e4", "e5", "Nf3", "Nf6", "Nxe5"):
-        board.push_san(san)  # Black to move: the Stafford entry
+def test_unsound_traps_thin_out_as_the_opponent_strengthens() -> None:
+    """Swindles get withdrawn against strong opponents; sound gambits do not.
 
-    seen: Dict[int, set[str]] = {}
-    for rating in (1100, 1900):
-        with OpeningBook(SHIPPED_TRAP_BOOK, SHIPPED_TRAP_BOOK, rng=random.Random(9)) as book:
-            book.set_opponent_rating(rating)
-            seen[rating] = {board.san(book.probe(board).move) for _ in range(50) if book.probe(board)}  # type: ignore[union-attr]
+    Asserted on the unsound *population* rather than one named line, because
+    which lines survive is now set by measured win rates and will move when the
+    calibration is refreshed. The invariant that must hold is directional.
+    """
+    from src.engine.books.build_trap_book import (
+        RATING_BANDS,
+        SOUND_OBJECTIVE_CP,
+        RATINGS_PATH,
+        load_masks,
+    )
 
-    assert "Nc6" in seen[1100], "the Stafford must be on offer against a 1100"
-    assert "Nc6" not in seen[1900], f"the Stafford must be off against a 1900, saw {seen[1900]}"
+    masks = load_masks()
+    assert masks is not None, "run python -m src.engine.books.build_trap_book --measure"
+    measured = json.loads(RATINGS_PATH.read_text())["lines"]
+    unsound = {
+        name for name, record in measured.items()
+        if float(record["objective_worst"]) < SOUND_OBJECTIVE_CP
+    }
+
+    def live_unsound(band: int) -> set[str]:
+        bit = 1 << RATING_BANDS.index(band)
+        return {name for name, mask in masks.items() if mask & bit and name in unsound}
+
+    low, high = live_unsound(1100), live_unsound(1900)
+    assert low, "some unsound traps must be playable against a 1100"
+    assert len(high) < len(low), f"unsound traps must thin out: {len(low)} -> {len(high)}"
+    print(f"    unsound lines live: 1100={len(low)} 1900={len(high)}")
 
 
 def test_unbanded_books_stay_eligible_at_every_rating() -> None:

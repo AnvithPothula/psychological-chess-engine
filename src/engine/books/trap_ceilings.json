@@ -1,0 +1,1327 @@
+{
+  "generated": "2026-09-10T01:31:47+00:00",
+  "threshold": 0.5,
+  "min_games": 500,
+  "speeds": [
+    "Blitz",
+    "Rapid",
+    "Classical"
+  ],
+  "bands": [
+    1100,
+    1200,
+    1300,
+    1400,
+    1500,
+    1600,
+    1700,
+    1800,
+    1900
+  ],
+  "lines": {
+    "Stafford Gambit, Bg5 trap": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1700,
+      "source": "trueelo",
+      "detail": "petrovs-defense-stafford-gambit",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.5141,
+          "games": 50403
+        },
+        {
+          "band": 1000,
+          "score": 0.5333,
+          "games": 113251
+        },
+        {
+          "band": 1200,
+          "score": 0.5393,
+          "games": 220708
+        },
+        {
+          "band": 1400,
+          "score": 0.5315,
+          "games": 306894
+        },
+        {
+          "band": 1600,
+          "score": 0.5187,
+          "games": 291043
+        },
+        {
+          "band": 1800,
+          "score": 0.5036,
+          "games": 192205
+        },
+        {
+          "band": 2000,
+          "score": 0.4855,
+          "games": 74100
+        },
+        {
+          "band": 2200,
+          "score": 0.4674,
+          "games": 15780
+        }
+      ]
+    },
+    "Stafford Gambit, h3 trap": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1700,
+      "source": "trueelo",
+      "detail": "petrovs-defense-stafford-gambit",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.5141,
+          "games": 50403
+        },
+        {
+          "band": 1000,
+          "score": 0.5333,
+          "games": 113251
+        },
+        {
+          "band": 1200,
+          "score": 0.5393,
+          "games": 220708
+        },
+        {
+          "band": 1400,
+          "score": 0.5315,
+          "games": 306894
+        },
+        {
+          "band": 1600,
+          "score": 0.5187,
+          "games": 291043
+        },
+        {
+          "band": 1800,
+          "score": 0.5036,
+          "games": 192205
+        },
+        {
+          "band": 2000,
+          "score": 0.4855,
+          "games": 74100
+        },
+        {
+          "band": 2200,
+          "score": 0.4674,
+          "games": 15780
+        }
+      ]
+    },
+    "Stafford Gambit, Be7 setup": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1600,
+      "source": "trueelo",
+      "detail": "petrovs-defense-stafford-gambit",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.5141,
+          "games": 50403
+        },
+        {
+          "band": 1000,
+          "score": 0.5333,
+          "games": 113251
+        },
+        {
+          "band": 1200,
+          "score": 0.5393,
+          "games": 220708
+        },
+        {
+          "band": 1400,
+          "score": 0.5315,
+          "games": 306894
+        },
+        {
+          "band": 1600,
+          "score": 0.5187,
+          "games": 291043
+        },
+        {
+          "band": 1800,
+          "score": 0.5036,
+          "games": 192205
+        },
+        {
+          "band": 2000,
+          "score": 0.4855,
+          "games": 74100
+        },
+        {
+          "band": 2200,
+          "score": 0.4674,
+          "games": 15780
+        }
+      ]
+    },
+    "Traxler Counterattack, Kxf2": {
+      "bands": [
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1600,
+      "source": "trueelo",
+      "detail": "italian-game-two-knights-defense-traxler-counterattack",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.4921,
+          "games": 5544
+        },
+        {
+          "band": 1000,
+          "score": 0.4848,
+          "games": 11075
+        },
+        {
+          "band": 1200,
+          "score": 0.4953,
+          "games": 15836
+        },
+        {
+          "band": 1400,
+          "score": 0.497,
+          "games": 15495
+        },
+        {
+          "band": 1600,
+          "score": 0.5296,
+          "games": 13316
+        },
+        {
+          "band": 1800,
+          "score": 0.5231,
+          "games": 11158
+        },
+        {
+          "band": 2000,
+          "score": 0.5122,
+          "games": 5400
+        },
+        {
+          "band": 2200,
+          "score": 0.5026,
+          "games": 1227
+        }
+      ]
+    },
+    "Traxler Counterattack, Kf1": {
+      "bands": [
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1500,
+      "source": "trueelo",
+      "detail": "italian-game-two-knights-defense-traxler-counterattack",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.4921,
+          "games": 5544
+        },
+        {
+          "band": 1000,
+          "score": 0.4848,
+          "games": 11075
+        },
+        {
+          "band": 1200,
+          "score": 0.4953,
+          "games": 15836
+        },
+        {
+          "band": 1400,
+          "score": 0.497,
+          "games": 15495
+        },
+        {
+          "band": 1600,
+          "score": 0.5296,
+          "games": 13316
+        },
+        {
+          "band": 1800,
+          "score": 0.5231,
+          "games": 11158
+        },
+        {
+          "band": 2000,
+          "score": 0.5122,
+          "games": 5400
+        },
+        {
+          "band": 2200,
+          "score": 0.5026,
+          "games": 1227
+        }
+      ]
+    },
+    "Englund Gambit, Qc1 mate": {
+      "bands": [
+        1400,
+        1500
+      ],
+      "ceiling": 1500,
+      "curated_ceiling": 1400,
+      "source": "trueelo",
+      "detail": "englund-gambit",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.476,
+          "games": 1661900
+        },
+        {
+          "band": 1000,
+          "score": 0.4885,
+          "games": 2290308
+        },
+        {
+          "band": 1200,
+          "score": 0.4987,
+          "games": 3561148
+        },
+        {
+          "band": 1400,
+          "score": 0.502,
+          "games": 4635543
+        },
+        {
+          "band": 1600,
+          "score": 0.4992,
+          "games": 4474505
+        },
+        {
+          "band": 1800,
+          "score": 0.4923,
+          "games": 3136721
+        },
+        {
+          "band": 2000,
+          "score": 0.4711,
+          "games": 1157487
+        },
+        {
+          "band": 2200,
+          "score": 0.4391,
+          "games": 203094
+        }
+      ]
+    },
+    "Elephant Gambit, Wasp": {
+      "bands": [
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1300,
+      "source": "trueelo",
+      "detail": "elephant-gambit",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.4642,
+          "games": 404627
+        },
+        {
+          "band": 1000,
+          "score": 0.4674,
+          "games": 528730
+        },
+        {
+          "band": 1200,
+          "score": 0.4825,
+          "games": 665354
+        },
+        {
+          "band": 1400,
+          "score": 0.5009,
+          "games": 806672
+        },
+        {
+          "band": 1600,
+          "score": 0.5158,
+          "games": 911641
+        },
+        {
+          "band": 1800,
+          "score": 0.5199,
+          "games": 829253
+        },
+        {
+          "band": 2000,
+          "score": 0.5072,
+          "games": 374399
+        },
+        {
+          "band": 2200,
+          "score": 0.4886,
+          "games": 89973
+        }
+      ]
+    },
+    "Latvian Gambit": {
+      "bands": [],
+      "ceiling": null,
+      "curated_ceiling": 1300,
+      "source": "trueelo",
+      "detail": "latvian-gambit",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.4597,
+          "games": 97204
+        },
+        {
+          "band": 1000,
+          "score": 0.4688,
+          "games": 145759
+        },
+        {
+          "band": 1200,
+          "score": 0.4769,
+          "games": 212552
+        },
+        {
+          "band": 1400,
+          "score": 0.4851,
+          "games": 282600
+        },
+        {
+          "band": 1600,
+          "score": 0.4955,
+          "games": 334557
+        },
+        {
+          "band": 1800,
+          "score": 0.4995,
+          "games": 320567
+        },
+        {
+          "band": 2000,
+          "score": 0.4931,
+          "games": 165350
+        },
+        {
+          "band": 2200,
+          "score": 0.4793,
+          "games": 44621
+        }
+      ]
+    },
+    "Halloween Gambit": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1400,
+      "source": "trueelo",
+      "detail": "four-knights-game-halloween-gambit",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.5155,
+          "games": 62722
+        },
+        {
+          "band": 1000,
+          "score": 0.5434,
+          "games": 89333
+        },
+        {
+          "band": 1200,
+          "score": 0.541,
+          "games": 95163
+        },
+        {
+          "band": 1400,
+          "score": 0.5312,
+          "games": 87201
+        },
+        {
+          "band": 1600,
+          "score": 0.5383,
+          "games": 67632
+        },
+        {
+          "band": 1800,
+          "score": 0.5373,
+          "games": 59196
+        },
+        {
+          "band": 2000,
+          "score": 0.5336,
+          "games": 37275
+        },
+        {
+          "band": 2200,
+          "score": 0.5343,
+          "games": 14882
+        }
+      ]
+    },
+    "Fishing Pole Trap": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700
+      ],
+      "ceiling": 1700,
+      "curated_ceiling": 1600,
+      "source": "trueelo",
+      "detail": "ruy-lopez-berlin-defense-fishing-pole-variation",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.5574,
+          "games": 866
+        },
+        {
+          "band": 1000,
+          "score": 0.5909,
+          "games": 2339
+        },
+        {
+          "band": 1200,
+          "score": 0.5776,
+          "games": 4406
+        },
+        {
+          "band": 1400,
+          "score": 0.5484,
+          "games": 5220
+        },
+        {
+          "band": 1600,
+          "score": 0.5019,
+          "games": 3876
+        },
+        {
+          "band": 1800,
+          "score": 0.4723,
+          "games": 1933
+        },
+        {
+          "band": 2000,
+          "score": 0.4505,
+          "games": 611
+        },
+        {
+          "band": 2200,
+          "score": 0.4036,
+          "games": 116
+        }
+      ]
+    },
+    "Siberian Trap": {
+      "bands": [
+        1400,
+        1500
+      ],
+      "ceiling": 1500,
+      "curated_ceiling": 1800,
+      "source": "trueelo",
+      "detail": "sicilian-defense-smith-morra-gambit-accepted-siberian-variation",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.6095,
+          "games": 20
+        },
+        {
+          "band": 1000,
+          "score": 0.5009,
+          "games": 109
+        },
+        {
+          "band": 1200,
+          "score": 0.4973,
+          "games": 621
+        },
+        {
+          "band": 1400,
+          "score": 0.5011,
+          "games": 1955
+        },
+        {
+          "band": 1600,
+          "score": 0.4829,
+          "games": 4352
+        },
+        {
+          "band": 1800,
+          "score": 0.4894,
+          "games": 6665
+        },
+        {
+          "band": 2000,
+          "score": 0.4697,
+          "games": 5783
+        },
+        {
+          "band": 2200,
+          "score": 0.4343,
+          "games": 2488
+        }
+      ]
+    },
+    "Lasker Trap, underpromotion": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1800,
+      "source": "trueelo",
+      "detail": "queens-gambit-declined-albin-countergambit-lasker-trap",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.613,
+          "games": 210
+        },
+        {
+          "band": 1000,
+          "score": 0.6624,
+          "games": 1083
+        },
+        {
+          "band": 1200,
+          "score": 0.6682,
+          "games": 3810
+        },
+        {
+          "band": 1400,
+          "score": 0.6748,
+          "games": 9903
+        },
+        {
+          "band": 1600,
+          "score": 0.6595,
+          "games": 17470
+        },
+        {
+          "band": 1800,
+          "score": 0.6474,
+          "games": 16227
+        },
+        {
+          "band": 2000,
+          "score": 0.6307,
+          "games": 5774
+        },
+        {
+          "band": 2200,
+          "score": 0.5973,
+          "games": 802
+        }
+      ]
+    },
+    "Cochrane Gambit": {
+      "bands": [
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1700,
+      "source": "trueelo",
+      "detail": "petrovs-defense-cochrane-gambit",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.489,
+          "games": 1469
+        },
+        {
+          "band": 1000,
+          "score": 0.4983,
+          "games": 1844
+        },
+        {
+          "band": 1200,
+          "score": 0.4835,
+          "games": 2297
+        },
+        {
+          "band": 1400,
+          "score": 0.4717,
+          "games": 2624
+        },
+        {
+          "band": 1600,
+          "score": 0.4895,
+          "games": 2961
+        },
+        {
+          "band": 1800,
+          "score": 0.5265,
+          "games": 3069
+        },
+        {
+          "band": 2000,
+          "score": 0.5277,
+          "games": 2570
+        },
+        {
+          "band": 2200,
+          "score": 0.5448,
+          "games": 1196
+        }
+      ]
+    },
+    "Tennison Gambit, Brigg's Trap": {
+      "bands": [
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1500,
+      "source": "trueelo",
+      "detail": "zukertort-opening-tennison-gambit",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.4579,
+          "games": 507611
+        },
+        {
+          "band": 1000,
+          "score": 0.4848,
+          "games": 780164
+        },
+        {
+          "band": 1200,
+          "score": 0.4909,
+          "games": 1027610
+        },
+        {
+          "band": 1400,
+          "score": 0.4945,
+          "games": 1230571
+        },
+        {
+          "band": 1600,
+          "score": 0.5046,
+          "games": 1257739
+        },
+        {
+          "band": 1800,
+          "score": 0.5108,
+          "games": 945393
+        },
+        {
+          "band": 2000,
+          "score": 0.5147,
+          "games": 308742
+        },
+        {
+          "band": 2200,
+          "score": 0.5213,
+          "games": 46609
+        }
+      ]
+    },
+    "Wayward Queen, punished": {
+      "bands": [],
+      "ceiling": null,
+      "curated_ceiling": 1400,
+      "source": "trueelo",
+      "detail": "kings-pawn-game-wayward-queen-attack",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.4613,
+          "games": 2552720
+        },
+        {
+          "band": 1000,
+          "score": 0.4658,
+          "games": 2037421
+        },
+        {
+          "band": 1200,
+          "score": 0.466,
+          "games": 1592015
+        },
+        {
+          "band": 1400,
+          "score": 0.4705,
+          "games": 992580
+        },
+        {
+          "band": 1600,
+          "score": 0.4509,
+          "games": 494779
+        },
+        {
+          "band": 1800,
+          "score": 0.4403,
+          "games": 159329
+        },
+        {
+          "band": 2000,
+          "score": 0.4333,
+          "games": 29747
+        },
+        {
+          "band": 2200,
+          "score": 0.4352,
+          "games": 7183
+        }
+      ]
+    },
+    "Vienna Gambit": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1900,
+      "source": "trueelo",
+      "detail": "vienna-game-vienna-gambit",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.5896,
+          "games": 104192
+        },
+        {
+          "band": 1000,
+          "score": 0.6018,
+          "games": 235468
+        },
+        {
+          "band": 1200,
+          "score": 0.6,
+          "games": 379213
+        },
+        {
+          "band": 1400,
+          "score": 0.5963,
+          "games": 482843
+        },
+        {
+          "band": 1600,
+          "score": 0.5927,
+          "games": 445172
+        },
+        {
+          "band": 1800,
+          "score": 0.5881,
+          "games": 293507
+        },
+        {
+          "band": 2000,
+          "score": 0.5935,
+          "games": 107663
+        },
+        {
+          "band": 2200,
+          "score": 0.6121,
+          "games": 18251
+        }
+      ]
+    },
+    "Fried Liver Attack": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1900,
+      "source": "trueelo",
+      "detail": "italian-game-two-knights-defense-fried-liver-attack",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.72,
+          "games": 70051
+        },
+        {
+          "band": 1000,
+          "score": 0.7178,
+          "games": 220720
+        },
+        {
+          "band": 1200,
+          "score": 0.7029,
+          "games": 304100
+        },
+        {
+          "band": 1400,
+          "score": 0.6857,
+          "games": 268390
+        },
+        {
+          "band": 1600,
+          "score": 0.6697,
+          "games": 170182
+        },
+        {
+          "band": 1800,
+          "score": 0.6517,
+          "games": 70823
+        },
+        {
+          "band": 2000,
+          "score": 0.6135,
+          "games": 16158
+        },
+        {
+          "band": 2200,
+          "score": 0.5691,
+          "games": 2597
+        }
+      ]
+    },
+    "Lolli Attack": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1900,
+      "source": "trueelo",
+      "detail": "italian-game-two-knights-defense-lolli-attack",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.5279,
+          "games": 10360
+        },
+        {
+          "band": 1000,
+          "score": 0.5504,
+          "games": 23682
+        },
+        {
+          "band": 1200,
+          "score": 0.5654,
+          "games": 27109
+        },
+        {
+          "band": 1400,
+          "score": 0.5731,
+          "games": 20141
+        },
+        {
+          "band": 1600,
+          "score": 0.5881,
+          "games": 10901
+        },
+        {
+          "band": 1800,
+          "score": 0.6142,
+          "games": 4828
+        },
+        {
+          "band": 2000,
+          "score": 0.6362,
+          "games": 1751
+        },
+        {
+          "band": 2200,
+          "score": 0.6374,
+          "games": 628
+        }
+      ]
+    },
+    "Danish Gambit": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1900,
+      "source": "trueelo",
+      "detail": "danish-gambit",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.521,
+          "games": 93479
+        },
+        {
+          "band": 1000,
+          "score": 0.549,
+          "games": 273332
+        },
+        {
+          "band": 1200,
+          "score": 0.5542,
+          "games": 637462
+        },
+        {
+          "band": 1400,
+          "score": 0.5582,
+          "games": 991730
+        },
+        {
+          "band": 1600,
+          "score": 0.5582,
+          "games": 1178417
+        },
+        {
+          "band": 1800,
+          "score": 0.5547,
+          "games": 922080
+        },
+        {
+          "band": 2000,
+          "score": 0.5457,
+          "games": 368259
+        },
+        {
+          "band": 2200,
+          "score": 0.5435,
+          "games": 59374
+        }
+      ]
+    },
+    "Smith-Morra Gambit": {
+      "bands": [
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1900,
+      "source": "trueelo",
+      "detail": "sicilian-defense-smith-morra-gambit",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.4875,
+          "games": 247560
+        },
+        {
+          "band": 1000,
+          "score": 0.4917,
+          "games": 549435
+        },
+        {
+          "band": 1200,
+          "score": 0.4915,
+          "games": 839716
+        },
+        {
+          "band": 1400,
+          "score": 0.491,
+          "games": 998457
+        },
+        {
+          "band": 1600,
+          "score": 0.503,
+          "games": 1003756
+        },
+        {
+          "band": 1800,
+          "score": 0.5134,
+          "games": 778697
+        },
+        {
+          "band": 2000,
+          "score": 0.5274,
+          "games": 353117
+        },
+        {
+          "band": 2200,
+          "score": 0.5508,
+          "games": 101411
+        }
+      ]
+    },
+    "Max Lange Attack": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1900,
+      "source": "trueelo",
+      "detail": "italian-game-two-knights-defense-max-lange-attack",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.6225,
+          "games": 2250
+        },
+        {
+          "band": 1000,
+          "score": 0.6369,
+          "games": 7081
+        },
+        {
+          "band": 1200,
+          "score": 0.6304,
+          "games": 16955
+        },
+        {
+          "band": 1400,
+          "score": 0.6309,
+          "games": 31075
+        },
+        {
+          "band": 1600,
+          "score": 0.6244,
+          "games": 50700
+        },
+        {
+          "band": 1800,
+          "score": 0.6342,
+          "games": 60379
+        },
+        {
+          "band": 2000,
+          "score": 0.6448,
+          "games": 35202
+        },
+        {
+          "band": 2200,
+          "score": 0.6546,
+          "games": 9303
+        }
+      ]
+    },
+    "Urusov Gambit": {
+      "bands": [
+        1100,
+        1200,
+        1300,
+        1400,
+        1500,
+        1600,
+        1700,
+        1800,
+        1900
+      ],
+      "ceiling": 1900,
+      "curated_ceiling": 1900,
+      "source": "trueelo",
+      "detail": "bishops-opening-urusov-gambit",
+      "owner": "white",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.5119,
+          "games": 4904
+        },
+        {
+          "band": 1000,
+          "score": 0.5334,
+          "games": 11912
+        },
+        {
+          "band": 1200,
+          "score": 0.5327,
+          "games": 24388
+        },
+        {
+          "band": 1400,
+          "score": 0.5438,
+          "games": 37592
+        },
+        {
+          "band": 1600,
+          "score": 0.5312,
+          "games": 45113
+        },
+        {
+          "band": 1800,
+          "score": 0.541,
+          "games": 36444
+        },
+        {
+          "band": 2000,
+          "score": 0.5376,
+          "games": 19821
+        },
+        {
+          "band": 2200,
+          "score": 0.5354,
+          "games": 4202
+        }
+      ]
+    },
+    "Albin Countergambit": {
+      "bands": [],
+      "ceiling": null,
+      "curated_ceiling": 1700,
+      "source": "trueelo",
+      "detail": "queens-gambit-declined-albin-countergambit",
+      "owner": "black",
+      "curve": [
+        {
+          "band": 0,
+          "score": 0.4602,
+          "games": 50047
+        },
+        {
+          "band": 1000,
+          "score": 0.4595,
+          "games": 92453
+        },
+        {
+          "band": 1200,
+          "score": 0.4666,
+          "games": 143609
+        },
+        {
+          "band": 1400,
+          "score": 0.472,
+          "games": 206542
+        },
+        {
+          "band": 1600,
+          "score": 0.4824,
+          "games": 278954
+        },
+        {
+          "band": 1800,
+          "score": 0.4828,
+          "games": 270912
+        },
+        {
+          "band": 2000,
+          "score": 0.4818,
+          "games": 133180
+        },
+        {
+          "band": 2200,
+          "score": 0.4791,
+          "games": 36359
+        }
+      ]
+    }
+  }
+}

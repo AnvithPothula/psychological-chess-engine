@@ -53,6 +53,12 @@ MAX_WEIGHT: Final[int] = 0xFFFF
 DEFAULT_WEIGHT: Final[int] = 100
 BOOKS_DIR: Final[Path] = Path(__file__).resolve().parent
 RATINGS_PATH: Final[Path] = BOOKS_DIR / "trap_ratings.json"
+CEILINGS_PATH: Final[Path] = BOOKS_DIR / "trap_ceilings.json"
+"""Empirical ceilings from ``trueelo_scraper``. Defined here rather than there so
+the scraper can import it without this module importing the scraper back."""
+
+OFF_EVERYWHERE: Final[int] = 0
+"""Ceiling for a line the data says never pays: below every rating band."""
 
 RATING_BANDS: Final[Tuple[int, ...]] = config.AVAILABLE_MAIA_RATINGS
 """Shared with the Maia checkpoints: a band *is* a Maia model."""
@@ -96,11 +102,9 @@ class TrapLine:
     """Relative likelihood of choosing this line where it branches."""
 
     ceiling: int = 1900
-    """Highest rating band that still gets offered this line.
-
-    Curated from empirical win-rate-by-rating, **not** from the Maia rollout.
-    That distinction is deliberate: see :func:`eligible_bands`.
-    """
+    """Fallback ceiling, used only when the empirical calibration has no curve
+    for this line. The real number comes from ``trap_ceilings.json``; see
+    :func:`resolve_ceilings`."""
 
     @property
     def owner_name(self) -> str:
@@ -206,7 +210,7 @@ def smooth(values: Sequence[float], window: int = SMOOTHING_WINDOW) -> List[floa
     ]
 
 
-def eligible_bands(utilities: Sequence[float], objective_worst: float, ceiling: int = 1900) -> int:
+def eligible_bands(utilities: Sequence[float], objective_worst: float, allowed: int = ALL_BANDS) -> int:
     """Bitmask of the rating bands where a line is worth playing.
 
     Two instruments, each doing the job it is actually good at.
@@ -217,28 +221,21 @@ def eligible_bands(utilities: Sequence[float], objective_worst: float, ceiling: 
 
     **Empirical win rates decide the ceiling.** The rollout was tried for this
     and does not work: its per-band payoff curves come out flat or mildly
-    *rising* with rating, while 1.8M Lichess games show the Stafford falling
-    from 72.3% at 0-999 to 41.9% at 1800-1999. A two-ply opening measurement
-    cannot see the reason for that decay -- a 1900 converts a bad opening over
-    the following forty moves and a 1100 does not -- and the Maia-2 paper
-    independently reports the Maia-1 checkpoints are volatile across levels.
-    Tuning the threshold until the bands matched the empirical curve would have
-    been fitting noise, so the ceiling is curated per line instead and labelled
-    as such.
+    *rising* with rating, while millions of Lichess games show real decay. A
+    two-ply opening measurement cannot see the reason -- a 1900 converts a bad
+    structure over the following forty moves and a 1100 does not -- and the
+    Maia-2 paper independently reports the Maia-1 checkpoints are volatile
+    across levels. The ceiling therefore comes from measured expected score by
+    rating, via ``trueelo_scraper``.
     """
-    ceiling_mask = 0
-    for index, band in enumerate(RATING_BANDS):
-        if band <= ceiling:
-            ceiling_mask |= 1 << index
-
     if objective_worst >= SOUND_OBJECTIVE_CP:
-        return ceiling_mask
+        return allowed
     mask = 0
     for index, value in enumerate(smooth(utilities)):
         # An unsound line must at least be measurably worth something.
         if value >= MIN_TRAP_PAYOFF_CP:
             mask |= 1 << index
-    return mask & ceiling_mask
+    return mask & allowed
 
 
 def compile_lines(
@@ -386,17 +383,65 @@ def entry_id(key: int, raw_move: int) -> str:
     return f"{key:016x}:{raw_move:04x}"
 
 
+def _mask_from_ceiling(ceiling: int) -> int:
+    mask = 0
+    for index, band in enumerate(RATING_BANDS):
+        if band <= ceiling:
+            mask |= 1 << index
+    return mask
+
+
+def resolve_band_masks(path: Path = CEILINGS_PATH) -> Dict[str, int]:
+    """Empirical band masks where they exist, curated ceilings where they do not.
+
+    The calibration reports the bands that actually cleared the win-rate
+    threshold, not a ceiling, because real curves are not monotone -- a sound
+    gambit climbs with rating. A line that was scored but cleared nothing gets
+    an empty mask: the data actively says it never pays, which is a different
+    statement from having no data.
+    """
+    curated = {line.name: _mask_from_ceiling(line.ceiling) for line in TRAP_LINES}
+    if not path.exists():
+        logger.warning(
+            "%s missing; every ceiling falls back to the curated value. "
+            "Run: python -m src.engine.books.trueelo_scraper",
+            path.name,
+        )
+        return curated
+
+    payload = json.loads(path.read_text())
+    measured = payload.get("lines", {})
+    resolved = dict(curated)
+    for name, record in measured.items():
+        if name not in resolved:
+            logger.warning("calibration mentions unknown line %r, ignoring it", name)
+            continue
+        mask = 0
+        for band in record.get("bands", []):
+            if int(band) in RATING_BANDS:
+                mask |= 1 << RATING_BANDS.index(int(band))
+        resolved[name] = mask
+
+    absent = sorted(set(curated) - set(measured))
+    for name in absent:
+        logger.warning("no empirical curve for %-34s keeping curated ceiling", name)
+    logger.info(
+        "ceilings: %d empirical, %d curated fallbacks", len(curated) - len(absent), len(absent)
+    )
+    return resolved
+
+
 def load_masks(path: Path = RATINGS_PATH) -> Optional[Dict[str, int]]:
-    """Per-line band masks from a previous ``--measure`` run."""
+    """Per-line band masks: measured payoff gated by the empirical ceiling."""
     if not path.exists():
         return None
     payload = json.loads(path.read_text())
-    ceilings = {line.name: line.ceiling for line in TRAP_LINES}
+    allowed = resolve_band_masks()
     return {
         name: eligible_bands(
             [float(record["utility"][str(band)]) for band in RATING_BANDS],
             float(record["objective_worst"]),
-            ceilings.get(name, 1900),
+            allowed.get(name, ALL_BANDS),
         )
         for name, record in payload["lines"].items()
     }
