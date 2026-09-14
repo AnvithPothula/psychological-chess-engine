@@ -19,6 +19,7 @@ import chess
 from src.config import AVAILABLE_MAIA_RATINGS, DEFAULT_MAIA_RATING
 from src.engine import EvaluatorError, MaiaEvaluator, StockfishEvaluator
 from src.engine.book import OpeningBook
+from src.engine.policy_generator import load_proposer
 from src.engine.search import AdversarialSearcher
 from src.types import SearchConfig
 from src.ui.app import ChessApp
@@ -89,7 +90,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             MaiaEvaluator(rating=args.rating) as maia,
             OpeningBook(opponent_rating=args.my_rating or args.rating) as book,
         ):
-            searcher = AdversarialSearcher(stockfish, maia, config=SearchConfig(), book=book)
+            searcher = AdversarialSearcher(
+                stockfish, maia, config=SearchConfig(), book=book, proposer=load_proposer()
+            )
             logger.info(
                 "starting: you are %s against Maia-%d", args.color, args.rating
             )

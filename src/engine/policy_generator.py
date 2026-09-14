@@ -36,7 +36,7 @@ from src.training.model import (
 )
 from src.types import MoveDistribution
 
-__all__ = ["NeuralCandidateGenerator", "PolicyUnavailableError"]
+__all__ = ["NeuralCandidateGenerator", "PolicyUnavailableError", "load_proposer"]
 
 logger = logging.getLogger(__name__)
 
@@ -185,3 +185,18 @@ class NeuralCandidateGenerator:
             if len(candidates) >= top_k:
                 break
         return candidates
+
+
+def load_proposer(
+    checkpoint_path: Path = DEFAULT_CHECKPOINT, *, device: Optional[str] = None
+) -> Optional[NeuralCandidateGenerator]:
+    """The generator, or ``None`` when no usable checkpoint exists.
+
+    A missing checkpoint must not stop the engine from starting: the search
+    falls back to the Stockfish scan on its own when there is no proposer.
+    """
+    try:
+        return NeuralCandidateGenerator(checkpoint_path, device=device)
+    except PolicyUnavailableError as exc:
+        logger.warning("policy: running without a neural proposer (%s)", exc)
+        return None

@@ -28,7 +28,12 @@ from src.engine.stockfish import StockfishEvaluator
 from src.ui.app import AppState, ChessApp, Tab
 from src.ui.asset_manager import AssetManager
 from src.ui.constants import SQUARE_SIZE, WINDOW_HEIGHT, WINDOW_WIDTH
-from src.ui.mining_view import GAMES_CHOICES, PLIES_CHOICES, RATING_CHOICES
+from src.ui.mining_view import (
+    GAMES_CHOICES,
+    PLIES_CHOICES,
+    RATING_CHOICES,
+    seconds_per_game,
+)
 from src.ui.session import SessionState, SessionStore
 from tests.test_lichess import StubMaia
 from tests.test_search import ScriptedEvaluator
@@ -239,7 +244,8 @@ def test_runtime_estimate_scales_with_the_settings() -> None:
 
         assert long_hours > cheap_hours * 2, "a higher ply cap must cost visibly more"
         assert small_hours < cheap_hours and small_pairs < cheap_pairs
-        assert 2.0 < cheap_hours < 10.0, f"10k games at 30 plies should be hours, got {cheap_hours}"
+        # 1100 is the slowest band at 3.92s/game, so 10k games really is ~11h.
+        assert 5.0 < cheap_hours < 15.0, f"10k games at 30 plies should be hours, got {cheap_hours}"
 
 
 def test_board_stays_playable_while_mining() -> None:
@@ -395,3 +401,19 @@ def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
+
+def test_weak_opponents_cost_more_time_per_game() -> None:
+    """The 22,000-game run measured 1100 at 3.92s/game and 1900 at 1.50s.
+
+    An earlier fit scaled the other way and under-predicted 1100 by 3x, which is
+    the difference between an evening and an overnight run.
+    """
+    costs = [seconds_per_game(rating) for rating in RATING_CHOICES]
+    assert costs == sorted(costs, reverse=True), costs
+
+    for rating, measured in ((1100, 3.92), (1500, 2.16), (1700, 1.58), (1900, 1.50)):
+        assert abs(seconds_per_game(rating) - measured) < 0.01
+
+    assert seconds_per_game(900) == seconds_per_game(1100)
+    assert seconds_per_game(2500) == seconds_per_game(1900)

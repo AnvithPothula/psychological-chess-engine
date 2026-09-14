@@ -6,12 +6,16 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 
+# Secrets -- never commit
+.env
+.env.*
+!.env.example
+
 # macOS
 .DS_Store
 
 # Mined DPO data (reproducible via mine_overnight.sh)
-build/pairs_*.jsonl
-build/dpo_dataset_clean.jsonl
+build/*.jsonl
 build/distill_corpus.npz
 
 # Trained checkpoints (reproducible via distill.py / train_dpo.py).

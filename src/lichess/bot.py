@@ -28,6 +28,7 @@ from berserk.types.challenges import ChallengeDeclineReason
 
 from src import config as engine_config
 from src.engine import EvaluatorError
+from src.engine.policy_generator import load_proposer
 from src.engine.search import AdversarialSearcher
 from src.lichess.time_manager import TimeManager
 
@@ -363,6 +364,9 @@ class LichessBot:
         # see through are simply not offered.
         if self.searcher.book is not None:
             self.searcher.book.set_opponent_rating(opponent_rating)
+        # The policy net takes the same rating as an input plane, so it has to
+        # track the real opponent rather than the searcher's default.
+        self.searcher.opponent_rating = opponent_rating
 
         logger.info(
             "game %s: playing %s against %s (%d) -> opponent model maia-%d",
@@ -512,6 +516,8 @@ def main() -> int:
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     parser.add_argument("--min-clock", type=float, default=DEFAULT_MIN_INITIAL_SECONDS,
                         help="Decline games with a shorter initial clock (seconds).")
+    parser.add_argument("--no-policy", action="store_true",
+                        help="Skip the neural proposer and use the Stockfish scan alone.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -537,7 +543,10 @@ def main() -> int:
     ):
         bot = LichessBot(
             client,
-            AdversarialSearcher(stockfish, maia, book=book),
+            AdversarialSearcher(
+                stockfish, maia, book=book,
+                proposer=None if args.no_policy else load_proposer(),
+            ),
             maia,
             config=BotConfig(min_initial_seconds=args.min_clock),
         )

@@ -52,10 +52,27 @@ logger = logging.getLogger(__name__)
 
 RATING_CHOICES: Final[Tuple[int, ...]] = (1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900)
 
-# Fitted to a measured sweep (30 games per cell) so the panel can predict a run.
-SECONDS_PER_GAME_AT_30: Final[float] = 1.3
+# Seconds per game at a 30-ply cap, measured over the 22,000-game overnight run.
+# Weak opponents are SLOWER: their non-theoretical positions give Stockfish messier
+# lines to resolve. An earlier fit had this backwards and under-predicted 1100 by 3x.
+SECONDS_PER_GAME_BY_RATING: Final[Tuple[Tuple[int, float], ...]] = (
+    (1100, 3.92), (1500, 2.16), (1700, 1.58), (1900, 1.50),
+)
 PLY_COST_EXPONENT: Final[float] = 1.35
-PAIRS_PER_GAME: Final[float] = 0.8
+PAIRS_PER_GAME: Final[float] = 0.75
+
+
+def seconds_per_game(rating: int) -> float:
+    """Seconds per 30-ply game at ``rating``, linear between measured bands."""
+    points = SECONDS_PER_GAME_BY_RATING
+    for (low_rating, low_cost), (high_rating, high_cost) in zip(points, points[1:]):
+        if rating <= high_rating:
+            span = high_rating - low_rating
+            weight = max(0.0, (rating - low_rating) / span)
+            return low_cost + (high_cost - low_cost) * weight
+    return points[-1][1]
+
+
 GAMES_CHOICES: Final[Tuple[int, ...]] = (
     10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000,
 )
@@ -250,13 +267,11 @@ class MiningView:
         """Rough ``(hours, pairs)`` for the current settings.
 
         Interpolated from a measured sweep: seconds per game scale with ply cap
-        and opponent rating, and pairs per game barely move. Good enough to tell
-        a coffee break from an overnight run.
+        and opponent rating, and pairs per game barely move (0.73-0.76 across
+        every band). Good enough to tell a coffee break from an overnight run.
         """
         plies = self.settings.max_plies
-        rating = self.settings.rating
-        seconds = SECONDS_PER_GAME_AT_30 * (plies / 30.0) ** PLY_COST_EXPONENT
-        seconds *= 1.0 + (rating - 1100) / 1000.0
+        seconds = seconds_per_game(self.settings.rating) * (plies / 30.0) ** PLY_COST_EXPONENT
         games = self.settings.games
         return games * seconds / 3600.0, int(games * PAIRS_PER_GAME)
 
