@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# macOS
+.DS_Store
+
+# Mined DPO data (reproducible via mine_overnight.sh)
+build/pairs_*.jsonl
+build/dpo_dataset_clean.jsonl
+build/distill_corpus.npz
+
+# Trained checkpoints (reproducible via distill.py / train_dpo.py).
+# Maia weights (models/*.pb.gz) are inputs and stay tracked.
+*.pth
+
+# Run artifacts
+build/*.log
+build/session.json
+build/games/

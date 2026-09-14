@@ -107,6 +107,24 @@ engine time with the search that decides the actual move."""
 UTILITY_METER_CLAMP_CP: Final[float] = 400.0
 TOP_REPLIES_SHOWN: Final[int] = 3
 TRAINING_WINDOW_TITLE: Final[str] = "Self-Play Trap Mining"
+
+# --- tabs and controls -----------------------------------------------------
+TAB_BAR_HEIGHT: Final[int] = 34
+TAB_GAP: Final[int] = 6
+TAB_CORNER_RADIUS: Final[int] = 6
+CONTROL_HEIGHT: Final[int] = 32
+CONTROL_GAP: Final[int] = 10
+CONTROL_CORNER_RADIUS: Final[int] = 6
+STEPPER_BUTTON_WIDTH: Final[int] = 34
+
+TAB_ACTIVE_BG: Final[RGB] = (0x50, 0x50, 0x50)
+TAB_IDLE_BG: Final[RGB] = (0x33, 0x33, 0x33)
+CONTROL_BG: Final[RGB] = (0x33, 0x33, 0x33)
+CONTROL_HOVER_BG: Final[RGB] = (0x4A, 0x4A, 0x4A)
+CONTROL_DISABLED_BG: Final[RGB] = (0x2C, 0x2C, 0x2C)
+CONTROL_DISABLED_TEXT: Final[RGB] = (0x6A, 0x6A, 0x6A)
+ACCENT_START: Final[RGB] = (0x2A, 0x9D, 0x8F)
+ACCENT_STOP: Final[RGB] = (0xE7, 0x6F, 0x51)
 ELO_METER_SPAN: Final[float] = 400.0
 """Elo either side of the starting rating that the drift meter spans."""
 HAZARD_METER_SEGMENTS: Final[int] = 20

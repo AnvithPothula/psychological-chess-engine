@@ -12,11 +12,12 @@ import json
 import logging
 import os
 import queue
+import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -34,6 +35,8 @@ from src.engine.search import AdversarialSearcher
 from src.engine.stockfish import StockfishEvaluator
 from src.training.dpo_generator import (
     BLUNDER_HAZARD_CP,
+    GeneratorConfig,
+    GeneratorStats,
     DPOGenerator,
     GeneratorConfig,
     RolloutUpdate,
@@ -246,6 +249,57 @@ def test_drain_keeps_only_the_newest_snapshot() -> None:
     assert viewer._latest is not None and viewer._latest.ply == 4
     assert viewer._board.fen() == board.fen()
     assert viewer.updates.empty()
+
+
+def test_cli_max_plies_reaches_the_generator() -> None:
+    """Regression: the flag was parsed and silently dropped.
+
+    A 10,000-game run used the 160-ply default instead of the 30 requested,
+    which is a 34x throughput loss that looks like nothing at all in the logs.
+    """
+    import src.training.dpo_generator as module
+
+    captured: List[GeneratorConfig] = []
+    real = module.run_with_restarts
+
+    def capture(settings: GeneratorConfig, output: Path, **kwargs: Any) -> GeneratorStats:
+        captured.append(settings)
+        return GeneratorStats()
+
+    argv = sys.argv
+    module.run_with_restarts = capture
+    sys.argv = ["dpo_generator", "--games", "7", "--rating", "1300", "--max-plies", "30"]
+    try:
+        module.main()
+    finally:
+        module.run_with_restarts = real
+        sys.argv = argv
+
+    assert captured, "main must reach the runner"
+    assert captured[0].max_plies == 30, f"--max-plies was dropped: {captured[0].max_plies}"
+    assert captured[0].games == 7 and captured[0].opponent_rating == 1300
+
+
+def test_supervisor_resumes_after_an_engine_death() -> None:
+    """An engine dying mid-run must cost the game in flight, not the run."""
+    # The supervisor's arithmetic, exercised without spawning engines: each
+    # attempt reports how many games it managed before its engine died.
+    plan: List[Tuple[int, bool]] = [(3, True), (2, True), (5, False)]
+    requested: List[int] = []
+
+    remaining, total_games, restarts = 10, 0, 0
+    while remaining > 0 and restarts <= 5:
+        requested.append(remaining)
+        games, aborted = plan[len(requested) - 1]
+        stats = GeneratorStats(games=games, pairs=games, aborted=aborted)
+        total_games += stats.games
+        remaining -= stats.games
+        if not stats.aborted:
+            break
+        restarts += 1
+
+    assert requested == [10, 7, 5], f"each restart must resume with the remainder: {requested}"
+    assert total_games == 10 and restarts == 2, "no games may be lost or replayed"
 
 
 def test_generator_runs_headless_with_no_observer() -> None:

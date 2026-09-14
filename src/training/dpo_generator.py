@@ -21,7 +21,7 @@ import json
 import logging
 import random
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Final, List, Optional, Protocol, Sequence
 
@@ -38,6 +38,7 @@ __all__ = [
     "GeneratorConfig",
     "RolloutUpdate",
     "TrapPair",
+    "run_with_restarts",
     "main",
 ]
 
@@ -78,6 +79,28 @@ is both false and useless. The signal only exists where the trap changes the
 result."""
 
 PROGRESS_INTERVAL_SECONDS: Final[float] = 30.0
+MAX_ENGINE_RESTARTS: Final[int] = 20
+"""Engine restarts tolerated across one logical run.
+
+Lc0 and Stockfish are long-lived child processes and a multi-hour rollout will
+occasionally lose one -- a Metal backend hiccup, memory pressure, the OS. The
+failure surfaces as a terminated engine, and without a supervisor a single
+hiccup discards every game still to come."""
+
+RECYCLE_AFTER_GAMES: Final[int] = 500
+"""Proactively respawn the engines every this many games.
+
+Observed on a 21-hour rollout: lc0 reached 1.37GB resident and Stockfish 250MB,
+in processes that hold no per-game state we rely on. The cause was not pinned
+down -- macOS RSS is too noisy to attribute over short runs -- but a fresh
+process is bounded by construction, and a restart costs about a second against
+the twenty minutes of rollout it follows. Memory pressure is the most plausible
+reason a long run loses an engine, so this also makes the death it recovers from
+less likely."""
+
+ENGINE_RESTART_DELAY_SECONDS: Final[float] = 5.0
+"""Breathing room before respawning, so a machine under pressure is not
+immediately handed two more processes."""
 MAX_GAME_PLIES: Final[int] = 160
 """Self-play games are for mining openings and middlegames; a 300-move endgame
 shuffle produces no traps and burns the rollout budget."""
@@ -161,6 +184,10 @@ class GeneratorStats:
     pairs: int = 0
     searches: int = 0
     elapsed_seconds: float = 0.0
+    aborted: bool = False
+    """True when the run stopped because an engine died rather than finishing."""
+
+    restarts: int = 0
 
     @property
     def pairs_per_minute(self) -> float:
@@ -190,6 +217,7 @@ class DPOGenerator:
         self.stats = GeneratorStats()
         self.tracker = CognitiveTracker(float(self.config.opponent_rating))
         self._stop = False
+        self._engine_died = False
         self._started = 0.0
         self._last_progress = 0.0
 
@@ -217,6 +245,7 @@ class DPOGenerator:
                 self._log_progress(force=True)
 
         self.stats.elapsed_seconds = time.perf_counter() - self._started
+        self.stats.aborted = self._engine_died
         logger.info(
             "rollout: %d games, %d plies, %d pairs in %.1fs (%.1f pairs/min)",
             self.stats.games, self.stats.plies, self.stats.pairs,
@@ -278,6 +307,7 @@ class DPOGenerator:
             return None
         except EvaluatorError as exc:
             logger.error("rollout: search failed (%s), abandoning the game", exc)
+            self._engine_died = True
             self._stop = True
             return None
 
@@ -287,6 +317,7 @@ class DPOGenerator:
             distribution = self.opponent.predict_move_probabilities(board)
         except (EvaluatorError, ValueError) as exc:
             logger.error("rollout: opponent model failed (%s)", exc)
+            self._engine_died = True
             self._stop = True
             return None
 
@@ -433,6 +464,92 @@ class DPOGenerator:
         )
 
 
+def run_with_restarts(
+    settings: GeneratorConfig,
+    output: Path,
+    *,
+    observer: Optional[Observer] = None,
+    on_generator: Optional[Callable[["DPOGenerator"], None]] = None,
+    max_restarts: int = MAX_ENGINE_RESTARTS,
+    recycle_after: int = RECYCLE_AFTER_GAMES,
+) -> GeneratorStats:
+    """Run ``settings.games`` games, respawning the engines if one dies.
+
+    The generator does not own its engines, so it cannot restart them -- it can
+    only report that one died. This owns them, and resumes with whatever games
+    are left. Pairs are already appended and flushed per game, so a restart
+    loses at most the game in flight.
+
+    A restart that completes no games is treated as a hard failure rather than a
+    hiccup: retrying a missing binary forever is not resilience.
+    """
+    from src.engine import MaiaEvaluator, StockfishEvaluator
+    from src.engine.book import OpeningBook
+    from src import config as engine_config
+
+    total = GeneratorStats()
+    remaining = settings.games
+    barren_restarts = 0
+    started = time.perf_counter()
+
+    while remaining > 0 and total.restarts <= max_restarts:
+        # Engines are respawned every ``recycle_after`` games whether or not
+        # anything went wrong, which is what keeps a multi-hour run's memory
+        # flat instead of monotonically climbing.
+        batch = min(remaining, recycle_after) if recycle_after > 0 else remaining
+        attempt = replace(settings, games=batch)
+        band = engine_config.nearest_maia_rating(settings.opponent_rating)
+        with (
+            StockfishEvaluator() as stockfish,
+            MaiaEvaluator(band) as maia,
+            OpeningBook(opponent_rating=settings.opponent_rating) as book,
+        ):
+            generator = DPOGenerator(
+                AdversarialSearcher(stockfish, maia, book=book),
+                maia, config=attempt, observer=observer,
+            )
+            if on_generator is not None:
+                on_generator(generator)
+            stats = generator.run(output)
+
+        total.games += stats.games
+        total.plies += stats.plies
+        total.pairs += stats.pairs
+        total.searches += stats.searches
+        remaining -= stats.games
+
+        if not stats.aborted:
+            if remaining <= 0:
+                break
+            logger.info("rollout: recycling engines, %d games left", remaining)
+            barren_restarts = 0
+            time.sleep(ENGINE_RESTART_DELAY_SECONDS)
+            continue
+        barren_restarts = barren_restarts + 1 if stats.games == 0 else 0
+        if barren_restarts >= 2:
+            logger.error("rollout: two restarts produced no games, giving up")
+            total.aborted = True
+            break
+        total.restarts += 1
+        logger.warning(
+            "rollout: engine died, restarting (%d/%d) with %d games left",
+            total.restarts, max_restarts, remaining,
+        )
+        time.sleep(ENGINE_RESTART_DELAY_SECONDS)
+
+    if remaining > 0 and not total.aborted:
+        total.aborted = True
+        logger.error("rollout: exhausted %d restarts with %d games unplayed", max_restarts, remaining)
+
+    total.elapsed_seconds = time.perf_counter() - started
+    logger.info(
+        "rollout: %d/%d games, %d pairs, %d restarts in %.0fs (%.1f pairs/min)",
+        total.games, settings.games, total.pairs, total.restarts,
+        total.elapsed_seconds, total.pairs_per_minute,
+    )
+    return total
+
+
 def main() -> int:
     """Entry point: ``python -m src.training.dpo_generator``."""
     import argparse
@@ -446,6 +563,14 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("build/dpo_pairs.jsonl"))
     parser.add_argument("--viewer", action="store_true", help="Watch the rollout live.")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
+    parser.add_argument("--max-plies", type=int, default=30,
+                        help="Plies per game before the rollout moves on. 30 measured best: "
+                             "traps are an opening phenomenon, so longer games cost time "
+                             "without yielding more pairs.")
+    parser.add_argument("--max-restarts", type=int, default=MAX_ENGINE_RESTARTS,
+                        help="Engine respawns tolerated before giving up.")
+    parser.add_argument("--recycle-after", type=int, default=RECYCLE_AFTER_GAMES,
+                        help="Respawn the engines every N games to bound memory. 0 disables.")
     args = parser.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(message)s",
@@ -454,25 +579,33 @@ def main() -> int:
 
     from src import config as engine_config
 
-    band = engine_config.nearest_maia_rating(args.rating)
-    with (
-        StockfishEvaluator() as stockfish,
-        MaiaEvaluator(band) as maia,
-        OpeningBook(opponent_rating=args.rating) as book,
-    ):
-        searcher = AdversarialSearcher(stockfish, maia, book=book)
-        settings = GeneratorConfig(games=args.games, opponent_rating=args.rating)
-        generator = DPOGenerator(searcher, maia, config=settings)
+    settings = GeneratorConfig(
+        games=args.games,
+        opponent_rating=args.rating,
+        max_plies=args.max_plies,
+    )
 
-        if args.viewer:
-            from src.ui.training_viewer import run_with_viewer
+    if args.viewer:
+        from src.ui.training_viewer import run_with_viewer
 
+        band = engine_config.nearest_maia_rating(args.rating)
+        with (
+            StockfishEvaluator() as stockfish,
+            MaiaEvaluator(band) as maia,
+            OpeningBook(opponent_rating=args.rating) as book,
+        ):
+            generator = DPOGenerator(
+                AdversarialSearcher(stockfish, maia, book=book), maia, config=settings
+            )
             stats = run_with_viewer(generator, args.output)
-        else:
-            stats = generator.run(args.output)
+    else:
+        stats = run_with_restarts(
+            settings, args.output,
+            max_restarts=args.max_restarts, recycle_after=args.recycle_after,
+        )
 
     logger.info("wrote %d pairs to %s", stats.pairs, args.output)
-    return 0
+    return 1 if stats.aborted else 0
 
 
 if __name__ == "__main__":

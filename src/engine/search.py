@@ -7,6 +7,11 @@ competent opponent refutes is never played.
 
 One search does:
 
+0a. **Policy proposal.** When a neural candidate generator is attached, its top
+   moves join the root candidate list. It never *replaces* the Stockfish scan:
+   the scan is what supplies the objective best move, and the safety filter and
+   the fallback both rest on knowing it. The policy widens the list toward moves
+   Stockfish's own ranking would have dropped, which is where traps live.
 0. **Book probe.** If a book move exists for the position it is played straight
    away, skipping every engine call but one. See :meth:`AdversarialSearcher._try_book`
    for why that one call is not optional.
@@ -42,7 +47,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Dict, Final, List, Optional, Protocol, Sequence, Tuple
 
 import chess
 
@@ -65,6 +70,8 @@ __all__ = ["AdversarialSearcher", "HumanModel", "PositionEvaluator", "TerminalPo
 logger = logging.getLogger(__name__)
 
 _TOP_REPLIES_REPORTED = 3
+DEFAULT_PROPOSAL_RATING: Final[int] = 1500
+"""Opponent rating handed to the proposer when the caller has not set one."""
 
 
 class TerminalPositionError(EvaluatorError):
@@ -87,6 +94,14 @@ class HumanModel(Protocol):
     def predict_move_probabilities(
         self, board: chess.Board, *, temperature: Optional[float] = ...
     ) -> MoveDistribution: ...
+
+
+class CandidateProposer(Protocol):
+    """Move proposer. Implemented by ``NeuralCandidateGenerator``."""
+
+    def get_candidates(
+        self, board: chess.Board, rating: int, top_k: int = ...
+    ) -> List[chess.Move]: ...
 
 
 def truncate_distribution(
@@ -139,12 +154,16 @@ class AdversarialSearcher:
         config: Optional[SearchConfig] = None,
         cache: Optional[EvalCache] = None,
         book: Optional[OpeningBook] = None,
+        proposer: Optional[CandidateProposer] = None,
+        opponent_rating: int = DEFAULT_PROPOSAL_RATING,
     ) -> None:
         self.evaluator = evaluator
         self.human_model = human_model
         self.config = config if config is not None else SearchConfig()
         self.cache = cache if cache is not None else EvalCache(self.config.cache_size)
         self.book = book
+        self.proposer = proposer
+        self.opponent_rating = opponent_rating
 
     def search(self, board: chess.Board, config: Optional[SearchConfig] = None) -> SearchResult:
         """Choose a move for the side to move in ``board``.
@@ -181,12 +200,14 @@ class AdversarialSearcher:
             return from_book
 
         root_scores, best_move = self._scan_root(work, bot_color, settings)
-        candidates = self._select_candidates(root_scores, best_move, settings)
+        candidates = self._select_candidates(root_scores, best_move, settings, board=work)
         logger.debug(
             "root: best=%s (%+dcp) candidates=%s",
             best_move.uci(),
             root_scores[best_move],
-            [f"{move.uci()}:{root_scores[move]:+d}" for move in candidates],
+            # Proposals from the policy have no root score: the MultiPV scan
+            # only ranks its own lines, and asking it for one costs a search.
+            [self._describe_candidate(move, root_scores) for move in candidates],
         )
 
         nodes = 0
@@ -328,14 +349,54 @@ class AdversarialSearcher:
         best_move = min(scores, key=lambda move: (-scores[move], move.uci()))
         return scores, best_move
 
-    @staticmethod
     def _select_candidates(
-        scores: Dict[chess.Move, int], best_move: chess.Move, settings: SearchConfig
+        self,
+        scores: Dict[chess.Move, int],
+        best_move: chess.Move,
+        settings: SearchConfig,
+        *,
+        board: Optional[chess.Board] = None,
     ) -> List[chess.Move]:
-        """Moves within ``root_margin`` of the best, best first, width-capped."""
+        """Moves within ``root_margin`` of the best, plus the policy's proposals.
+
+        Stockfish's best move is always first, so the objective safety floor and
+        the fallback survive whatever the policy suggests. Proposals are
+        *appended*, never substituted, and they skip the margin filter on
+        purpose: a move Stockfish already ranks inside the margin needs no help,
+        and the interesting proposals are exactly the ones it ranked outside.
+        Every candidate still goes through the same safety filter, so a bad
+        proposal costs one evaluation, not a lost game.
+        """
         floor = scores[best_move] - settings.root_margin
         ranked = sorted(scores, key=lambda move: (-scores[move], move.uci()))
-        return [move for move in ranked if scores[move] >= floor][: settings.max_candidates]
+        candidates = [move for move in ranked if scores[move] >= floor][: settings.max_candidates]
+        if self.proposer is None or board is None:
+            return candidates
+
+        try:
+            proposed = self.proposer.get_candidates(
+                board, self.opponent_rating, top_k=settings.proposal_count
+            )
+        except Exception as exc:  # noqa: BLE001 - a dud model must not end the search
+            logger.warning("policy: proposal failed (%s), using the Stockfish scan alone", exc)
+            return candidates
+
+        legal = set(board.legal_moves)
+        added = [
+            move for move in proposed
+            if move in legal and move not in candidates
+        ][: settings.max_proposals]
+        if added:
+            logger.debug(
+                "policy: added %s to the %d Stockfish candidates",
+                [move.uci() for move in added], len(candidates),
+            )
+        return candidates + added
+
+    @staticmethod
+    def _describe_candidate(move: chess.Move, scores: Dict[chess.Move, int]) -> str:
+        score = scores.get(move)
+        return f"{move.uci()}:{score:+d}" if score is not None else f"{move.uci()}:policy"
 
     # -- candidate expansion ------------------------------------------------
 

@@ -23,6 +23,7 @@ from src.engine.search import AdversarialSearcher
 from src.types import SearchConfig
 from src.ui.app import ChessApp
 from src.ui.asset_manager import AssetManager
+from src.ui.session import SessionStore
 
 logger = logging.getLogger("psychological-chess")
 
@@ -37,6 +38,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=DEFAULT_MAIA_RATING,
         choices=AVAILABLE_MAIA_RATINGS,
         help="Maia rating used to model your moves (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--new-game",
+        action="store_true",
+        help="Discard the autosaved game instead of resuming it.",
     )
     parser.add_argument(
         "--color",
@@ -70,6 +76,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logging.getLogger("chess.engine").setLevel(logging.WARNING)
 
     human_color = chess.WHITE if args.color == "white" else chess.BLACK
+    session = SessionStore()
+    if args.new_game:
+        session.clear_game()
+        session.flush()
     assets = AssetManager()
     assets.ensure_assets()
 
@@ -88,6 +98,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 assets,
                 human_color=human_color,
                 opponent_label=f"Opponent model: Maia-{args.rating}",
+                session=session,
             ).run()
     except FileNotFoundError as exc:
         logger.error("missing dependency: %s", exc)

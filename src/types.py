@@ -157,6 +157,10 @@ class SearchConfig:
             than ``leaf_depth``: the root scan only has to rank candidates, while
             leaves decide utility and safety. MultiPV cost grows steeply with depth.
         leaf_depth: Depth for each expectimax leaf evaluation.
+        proposal_count: Moves asked of the neural proposer, when one is attached.
+        max_proposals: Cap on how many of those may join the candidate list.
+            Separate from ``proposal_count`` because the proposer may return
+            moves Stockfish already covered, which cost nothing to drop.
         book_safety_threshold: Deliberately looser floor for *book* moves. A
             search-invented trap has nothing vouching for it, so it must clear
             ``safety_threshold``; a curated gambit has a human accepting its
@@ -176,6 +180,8 @@ class SearchConfig:
     root_depth: int = 10
     leaf_depth: int = 12
     book_safety_threshold: int = 300
+    proposal_count: int = 3
+    max_proposals: int = 3
     cache_size: int = 100_000
 
     def __post_init__(self) -> None:
@@ -193,6 +199,8 @@ class SearchConfig:
             raise ValueError("search depths must be >= 1")
         if self.book_safety_threshold < 0:
             raise ValueError("book_safety_threshold must be non-negative")
+        if self.proposal_count < 1 or self.max_proposals < 0:
+            raise ValueError("proposal_count must be >= 1 and max_proposals >= 0")
         if self.cache_size < 1:
             raise ValueError("cache_size must be >= 1")
 
