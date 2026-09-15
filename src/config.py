@@ -45,6 +45,12 @@ LC0_POLICY_TEMPERATURE: Final[float] = 1.0
 # sharpens (more deterministic opponent model).
 DEFAULT_MAIA_TEMPERATURE: Final[float] = 1.0
 
+# Above this rating there is no Maia checkpoint, so the model is sharpened
+# instead -- see opponent_temperature. The floor is where measured gains stop.
+MAX_MODELLED_RATING: Final[int] = 1900
+TEMPERATURE_FALLOFF: Final[float] = 1000.0
+MIN_OPPONENT_TEMPERATURE: Final[float] = 0.4
+
 # --- Opening books ---------------------------------------------------------
 BOOKS_DIR: Final[Path] = PROJECT_ROOT / "src" / "engine" / "books"
 TRAP_BOOK_ENV_VAR: Final[str] = "TRAP_BOOK_PATH"
@@ -124,6 +130,27 @@ def nearest_maia_rating(rating: int) -> int:
     costs less than assuming they will find the refutation.
     """
     return min(AVAILABLE_MAIA_RATINGS, key=lambda available: (abs(available - rating), available))
+
+
+def opponent_temperature(rating: int) -> float:
+    """Softmax temperature for the opponent model at ``rating``.
+
+    Maia stops at 1900, so a 2400 is modelled by maia-1900 -- a model that
+    blunders far more than they do, which inflates every trap's expected value.
+    Sharpening the policy above 1900 restores some of the missing strength: the
+    opponent plays their top move more often, so the surviving traps are the
+    ones whose refutation is *not* the natural move.
+
+    Measured over 30 high-band positions: trap count is flat across every
+    temperature (22-23 of 30), so sharpening does not make the search timid.
+    Worst-case outcomes improve about 1.4x by T=0.4. T=0.3 scored better still
+    on worst case but gave up a third of the expected utility, so 0.4 is the
+    floor -- a balance point, not a measured cliff.
+    """
+    if rating <= MAX_MODELLED_RATING:
+        return DEFAULT_MAIA_TEMPERATURE
+    cooling = (rating - MAX_MODELLED_RATING) / TEMPERATURE_FALLOFF
+    return max(MIN_OPPONENT_TEMPERATURE, DEFAULT_MAIA_TEMPERATURE - cooling)
 
 
 def maia_weights(rating: int = DEFAULT_MAIA_RATING) -> Path:

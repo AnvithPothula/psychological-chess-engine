@@ -1,0 +1,11 @@
+# pip install -r requirements.txt
+
+# (brew install stockfish lc0) and put the Maia weights in models/.
+
+berserk==0.14.0        # Lichess bot API client
+chess==1.11.2          # board, move generation, UCI, polyglot books
+numpy==2.5.3           # distillation corpus as memory-mapped arrays
+pygame==2.6.1          # desktop UI
+requests==2.34.2       # book calibration scraping, berserk transport
+torch==2.14.0          # TrapPolicyNet: distillation, DPO, inference
+certifi==2026.7.22     # explicit TLS roots for the Lichess stream

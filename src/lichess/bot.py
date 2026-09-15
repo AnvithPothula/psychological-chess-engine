@@ -368,13 +368,16 @@ class LichessBot:
         # track the real opponent rather than the searcher's default.
         self.searcher.opponent_rating = opponent_rating
 
+        temperature = engine_config.opponent_temperature(opponent_rating)
         logger.info(
-            "game %s: playing %s against %s (%d) -> opponent model maia-%d",
+            "game %s: playing %s against %s (%d) -> opponent model maia-%d at T=%.2f%s",
             game_id,
             "white" if my_color == chess.WHITE else "black",
             opponent_name,
             opponent_rating,
             maia_rating,
+            temperature,
+            " (sharpened: above Maia's ceiling)" if temperature < 1.0 else "",
         )
         return GameSession(
             game_id=game_id,
