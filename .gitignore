@@ -26,3 +26,6 @@ build/distill_corpus.npz
 build/*.log
 build/session.json
 build/games/
+
+# Maia-2 checkpoint cache (273MB, auto-downloaded)
+maia2_models/

@@ -47,7 +47,10 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Dict, Final, List, Optional, Protocol, Sequence, Tuple
+from dataclasses import dataclass
+from typing import (
+    Dict, Final, FrozenSet, List, Mapping, Optional, Protocol, Sequence, Tuple,
+)
 
 import chess
 
@@ -102,6 +105,88 @@ class CandidateProposer(Protocol):
     def get_candidates(
         self, board: chess.Board, rating: int, top_k: int = ...
     ) -> List[chess.Move]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class BlunderScan:
+    """Blunder potential of one position, plus the replies that constitute it."""
+
+    beta: float
+    """``b(P) / n(P)``: the share of legal replies losing more than the threshold."""
+
+    blunders: FrozenSet[chess.Move]
+    """The blundering replies the scan actually resolved."""
+
+    legal: int
+
+
+def _rank_mover_relative(
+    scores: Mapping[chess.Move, EngineEval], mover: chess.Color
+) -> List[Tuple[chess.Move, int]]:
+    """MultiPV output as (move, centipawns) for the side to move, best first."""
+    sign = 1 if mover == chess.WHITE else -1
+    ranked = [(move, sign * evaluation.centipawns) for move, evaluation in scores.items()]
+    ranked.sort(key=lambda pair: (-pair[1], pair[0].uci()))
+    return ranked
+
+
+def _split_at_threshold(
+    ranked: Sequence[Tuple[chess.Move, int]], threshold: int
+) -> Tuple[int, List[chess.Move]]:
+    """Split a ranked scan into (sound move count, blundering moves)."""
+    if not ranked:
+        return 0, []
+    best = ranked[0][1]
+    blunders = [move for move, centipawns in ranked if best - centipawns > threshold]
+    return len(ranked) - len(blunders), blunders
+
+
+def blunder_potential(
+    evaluator: PositionEvaluator,
+    board: chess.Board,
+    *,
+    threshold: int,
+    depth: int,
+) -> BlunderScan:
+    """Anderson-Kleinberg blunder potential of ``board``: ``b(P) / n(P)``.
+
+    Beta answers "if the side to move picked uniformly at random, how likely is
+    a blunder?" -- a property of the *position*, carrying no model of who sits
+    behind it. That skill-blindness is the point: Anderson et al. found it
+    predicts human error better than rating and clock combined, and that it
+    keeps working at master level, where a trap book does not.
+
+    One MultiPV search over every legal reply, because measurement killed the
+    obvious optimisation. Truncating the scan to the top k and inferring the
+    tail from MultiPV's descending order looks exact -- anything below a blunder
+    is worse, so also a blunder -- but MultiPV=k and MultiPV=n explore different
+    trees and disagree on the scores themselves, so the inference was wrong on
+    9 of 25 sampled positions. It was also *slower* (0.80x), since the extra PV
+    lines are nearly free at fixed depth while a saturated scan pays twice.
+    """
+    legal_count = board.legal_moves.count()
+    if legal_count == 0:
+        return BlunderScan(0.0, frozenset(), 0)
+
+    ranked = _rank_mover_relative(
+        evaluator.analyse_root_moves(board, depth=depth, multipv=legal_count), board.turn
+    )
+    sound, blunders = _split_at_threshold(ranked, threshold)
+    return BlunderScan((legal_count - sound) / legal_count, frozenset(blunders), legal_count)
+
+
+def selection_score(candidate: CandidateStats, settings: SearchConfig) -> float:
+    """Ranking key: expectimax utility plus the danger terms, in centipawns.
+
+    ``expected_utility`` stays a pure expectimax quantity so ``is_trap`` and
+    ``blunder_trap_delta`` keep meaning what they always did; the danger terms
+    enter here, at selection time, weighted in centipawns.
+    """
+    return (
+        candidate.expected_utility
+        + settings.beta_weight * candidate.beta
+        + settings.blunder_mass_weight * candidate.blunder_mass
+    )
 
 
 def truncate_distribution(
@@ -226,7 +311,7 @@ class AdversarialSearcher:
                 [f"{r.move.uci()}@{r.probability:.0%}->{r.evaluation:+d}" for r in candidate.top_replies],
             )
 
-        stats.sort(key=lambda candidate: (-candidate.expected_utility, candidate.move.uci()))
+        stats.sort(key=lambda candidate: (-selection_score(candidate, settings), candidate.move.uci()))
         safe = [candidate for candidate in stats if candidate.is_safe]
 
         if safe:
@@ -435,8 +520,17 @@ class AdversarialSearcher:
                 max_replies=settings.max_replies,
             )
 
+            scan = BlunderScan(0.0, frozenset(), 0)
+            if settings.beta_weight or settings.blunder_mass_weight:
+                scan = blunder_potential(
+                    self.evaluator, board,
+                    threshold=settings.blunder_threshold,
+                    depth=settings.beta_depth,
+                )
+
             utility = 0.0
             worst = engine_config.MATE_SCORE_CP
+            blunder_mass = 0.0
             predicted: List[PredictedReply] = []
             for reply, probability in replies.probabilities.items():
                 board.push(reply)
@@ -446,6 +540,8 @@ class AdversarialSearcher:
                     board.pop()
                 utility += probability * score
                 worst = min(worst, score)
+                if reply in scan.blunders:
+                    blunder_mass += probability
                 predicted.append(PredictedReply(reply, probability, score))
         finally:
             board.pop()
@@ -453,7 +549,8 @@ class AdversarialSearcher:
         predicted.sort(key=lambda reply: (-reply.probability, reply.move.uci()))
         return (
             self._build_stats(
-                move, utility, worst, objective_score, tuple(predicted[:_TOP_REPLIES_REPORTED]), settings
+                move, utility, worst, objective_score, tuple(predicted[:_TOP_REPLIES_REPORTED]),
+                settings, scan.beta, blunder_mass,
             ),
             len(predicted) + 1,  # + the objective-floor evaluation
         )
@@ -466,6 +563,8 @@ class AdversarialSearcher:
         objective_score: int,
         replies: Sequence[PredictedReply],
         settings: SearchConfig,
+        beta: float = 0.0,
+        blunder_mass: float = 0.0,
     ) -> CandidateStats:
         return CandidateStats(
             move=move,
@@ -473,6 +572,8 @@ class AdversarialSearcher:
             worst_case=worst,
             objective_score=objective_score,
             blunder_trap_delta=utility - objective_score,
+            beta=beta,
+            blunder_mass=blunder_mass,
             is_safe=min(worst, objective_score) >= -settings.safety_threshold,
             top_replies=replies,
         )

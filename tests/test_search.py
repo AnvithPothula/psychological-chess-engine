@@ -20,13 +20,14 @@ from typing import Dict, List, Mapping, Optional
 from src import config as engine_config
 
 import chess
+import pytest
 
 from src.config import MATE_SCORE_CP
 from src.engine.cache import EvalCache, position_key
 from src.engine.maia import MaiaEvaluator
-from src.engine.search import AdversarialSearcher, TerminalPositionError, truncate_distribution
+from src.engine.search import AdversarialSearcher, blunder_potential, selection_score, TerminalPositionError, truncate_distribution
 from src.engine.stockfish import StockfishEvaluator
-from src.types import EngineEval, MoveDistribution, SearchConfig, win_probability
+from src.types import CandidateStats, EngineEval, MoveDistribution, SearchConfig, win_probability
 
 # A 2-ply search must fit comfortably inside a blitz move budget. Only the upper
 # bound is asserted: a lower bound would fail the build for being fast, and the
@@ -445,3 +446,55 @@ def test_the_search_sharpens_the_model_for_a_strong_opponent() -> None:
     searcher.opponent_rating = 2400
     searcher.search(chess.Board())
     assert seen and all(t is not None and t < 1.0 for t in seen), seen
+
+
+def test_blunder_potential_counts_losing_replies() -> None:
+    """beta is the share of the mover's legal replies that shed the threshold."""
+    board = chess.Board("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")
+    legal = list(board.legal_moves)
+    assert len(legal) > 3
+
+    # Three replies hold; every other legal move drops a full rook.
+    good = {move.uci(): 0 for move in legal[:3]}
+    evaluator = ScriptedEvaluator(good, {}, default_cp=-500)
+    scan = blunder_potential(evaluator, board, threshold=200, depth=6)
+
+    assert scan.legal == len(legal)
+    assert scan.beta == pytest.approx((len(legal) - 3) / len(legal))
+    assert all(move not in scan.blunders for move in legal[:3])
+
+
+def test_blunder_potential_is_zero_when_nothing_loses() -> None:
+    """A position where every reply holds carries no danger at all."""
+    board = chess.Board()
+    evaluator = ScriptedEvaluator({}, {}, default_cp=0)
+    assert blunder_potential(evaluator, board, threshold=200, depth=6).beta == 0.0
+
+
+def test_a_raised_threshold_can_only_lower_beta() -> None:
+    """Calling fewer moves blunders cannot make a position more dangerous."""
+    board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR b KQkq - 0 1")
+    legal = list(board.legal_moves)
+    evaluator = ScriptedEvaluator({legal[0].uci(): 0}, {}, default_cp=-300)
+    lenient = blunder_potential(evaluator, board, threshold=400, depth=6).beta
+    strict = blunder_potential(evaluator, board, threshold=200, depth=6).beta
+    assert lenient <= strict
+
+
+def test_beta_only_moves_selection_when_it_is_weighted() -> None:
+    """beta_weight of zero must reproduce the pre-Milestone-10 ranking exactly."""
+    quiet = CandidateStats(
+        move=chess.Move.from_uci("e2e4"), expected_utility=100.0, worst_case=0,
+        objective_score=100, blunder_trap_delta=0.0, beta=0.0, blunder_mass=0.0,
+        is_safe=True, top_replies=(),
+    )
+    sharp = CandidateStats(
+        move=chess.Move.from_uci("d2d4"), expected_utility=90.0, worst_case=0,
+        objective_score=90, blunder_trap_delta=0.0, beta=0.8, blunder_mass=0.5,
+        is_safe=True, top_replies=(),
+    )
+    off = SearchConfig()
+    assert selection_score(quiet, off) > selection_score(sharp, off)
+
+    on = SearchConfig(beta_weight=300.0)
+    assert selection_score(sharp, on) > selection_score(quiet, on)

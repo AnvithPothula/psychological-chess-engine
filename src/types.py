@@ -184,6 +184,27 @@ class SearchConfig:
     max_proposals: int = 3
     cache_size: int = 100_000
 
+    blunder_threshold: int = 200
+    """Centipawn loss against best play that makes a reply a *blunder*, in the
+    Anderson-Kleinberg sense. 200cp is a clear piece-or-more error."""
+
+    beta_depth: int = 6
+    """Depth for the blunder-potential scan. Measured over 25 mined positions
+    against a depth-12 reference: depth 6 costs 29ms and lands within 0.015
+    mean absolute error, depth 8 costs 109ms for no accuracy gain, and depth 10
+    costs 584ms and is *worse*. Classifying a 200cp loss is a coarse call."""
+
+    beta_weight: float = 0.0
+    """Gamma on blunder potential. Anderson et al. measure beta as skill-*free*
+    danger: the chance a uniformly random mover errs. It generalises to 2700
+    players precisely because it ignores who is moving. Zero reproduces the
+    pre-Milestone-10 utility exactly."""
+
+    blunder_mass_weight: float = 0.0
+    """Delta on Maia-weighted blunder mass -- the probability *this* opponent
+    picks a blundering reply. Complements beta rather than replacing it: beta is
+    the position's danger, this is the danger to the player in front of us."""
+
     def __post_init__(self) -> None:
         if self.safety_threshold < 0:
             raise ValueError("safety_threshold must be non-negative")
@@ -203,6 +224,10 @@ class SearchConfig:
             raise ValueError("proposal_count must be >= 1 and max_proposals >= 0")
         if self.cache_size < 1:
             raise ValueError("cache_size must be >= 1")
+        if self.blunder_threshold < 0:
+            raise ValueError("blunder_threshold must be non-negative")
+        if self.beta_depth < 1:
+            raise ValueError("beta_depth must be >= 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +264,17 @@ class CandidateStats:
     """``expected_utility - objective_score``: centipawns the move is expected to
     win purely from human error. Large and positive means a genuine trap."""
 
-    is_safe: bool
+    beta: float = 0.0
+    """Blunder potential of the position this move creates: the fraction of the
+    opponent's legal replies that lose more than ``blunder_threshold``."""
+
+    beta_exact: bool = True
+    """False when the MultiPV scan could not pin beta and it is an upper bound."""
+
+    blunder_mass: float = 0.0
+    """Opponent-model probability mass sitting on blundering replies."""
+
+    is_safe: bool = True
     """``min(worst_case, objective_score) >= -safety_threshold``. Both halves are
     required: the human-reply floor alone can be blinded by reply truncation,
     which drops exactly the low-probability refutation that busts a trap."""

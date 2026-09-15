@@ -563,10 +563,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("build/dpo_pairs.jsonl"))
     parser.add_argument("--viewer", action="store_true", help="Watch the rollout live.")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
-    parser.add_argument("--max-plies", type=int, default=30,
-                        help="Plies per game before the rollout moves on. 30 measured best: "
-                             "traps are an opening phenomenon, so longer games cost time "
-                             "without yielding more pairs.")
+    parser.add_argument("--max-plies", type=int, default=50,
+                        help="Plies per game before the rollout moves on. 30 maximises "
+                             "pairs per hour, but Barthelemy measures positional fragility "
+                             "peaking near ply 32 and evaluations turning decisive only "
+                             "after it, so 30 may have been harvesting cheap pairs and "
+                             "cutting the decisive ones. 50 costs ~2x throughput; the open "
+                             "question is whether it buys val_pref.")
     parser.add_argument("--max-restarts", type=int, default=MAX_ENGINE_RESTARTS,
                         help="Engine respawns tolerated before giving up.")
     parser.add_argument("--recycle-after", type=int, default=RECYCLE_AFTER_GAMES,
