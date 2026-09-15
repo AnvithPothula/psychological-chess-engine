@@ -9,3 +9,13 @@ pygame==2.6.1          # desktop UI
 requests==2.34.2       # book calibration scraping, berserk transport
 torch==2.14.0          # TrapPolicyNet: distillation, DPO, inference
 certifi==2026.7.22     # explicit TLS roots for the Lichess stream
+
+# Maia-2 opponent model. Its own pins are stale (torch==2.8.0, an old pyzstd
+# with no Python 3.13 wheel), so install it without them:
+#   pip install --no-deps maia2
+#   pip install 'pyzstd>=0.19' gdown einops
+# The ~280MB checkpoint downloads on first use into maia2_models/ (gitignored).
+maia2==0.10.0
+pyzstd==0.19.1
+gdown==6.2.0
+einops==0.8.2
