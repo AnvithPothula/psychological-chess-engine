@@ -344,7 +344,10 @@ def test_play_game_moves_swaps_model_and_stops_at_the_result() -> None:
     bot, model = build_bot(bots)
     bot.play_game("g1")
 
-    assert model.ratings_loaded == [1600], "1630 must map to the maia-1600 checkpoint"
+    assert model.ratings_loaded == [1630], (
+        "Maia-2 takes the rating as an input, so the opponent's real 1630 reaches "
+        "the model -- there is no checkpoint to snap to a band"
+    )
     assert len(bots.moves) == 2, f"expected two submitted moves, got {bots.moves}"
 
     board = chess.Board()

@@ -17,7 +17,7 @@ from typing import Optional, Sequence
 import chess
 
 from src.config import AVAILABLE_MAIA_RATINGS, DEFAULT_MAIA_RATING
-from src.engine import EvaluatorError, MaiaEvaluator, StockfishEvaluator
+from src.engine import EvaluatorError, Maia2Evaluator, StockfishEvaluator
 from src.engine.book import OpeningBook
 from src.engine.policy_generator import load_proposer
 from src.engine.search import AdversarialSearcher
@@ -87,7 +87,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         with (
             StockfishEvaluator() as stockfish,
-            MaiaEvaluator(rating=args.rating) as maia,
+            Maia2Evaluator(rating=args.rating) as maia,
             OpeningBook(opponent_rating=args.my_rating or args.rating) as book,
         ):
             searcher = AdversarialSearcher(

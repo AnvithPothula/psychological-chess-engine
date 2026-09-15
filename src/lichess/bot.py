@@ -353,11 +353,13 @@ class LichessBot:
         initial_fen = str(event.get("initialFen") or STARTING_POSITION)
         board = chess.Board() if initial_fen == STARTING_POSITION else chess.Board(initial_fen)
 
-        maia_rating = engine_config.nearest_maia_rating(opponent_rating)
+        # Maia-2 takes rating as an input: no band to snap to, no checkpoint
+        # to load, so this is an assignment rather than an engine round-trip.
+        maia_rating = opponent_rating
         try:
             self.human_model.set_rating(maia_rating)
         except EvaluatorError as exc:
-            logger.error("game %s: could not load maia-%d (%s), keeping maia-%d",
+            logger.error("game %s: could not model rating %d (%s), keeping %d",
                          game_id, maia_rating, exc, self.human_model.rating)
             maia_rating = self.human_model.rating
         # The book bands off the same rating: traps the opponent is likely to
@@ -370,7 +372,7 @@ class LichessBot:
 
         temperature = engine_config.opponent_temperature(opponent_rating)
         logger.info(
-            "game %s: playing %s against %s (%d) -> opponent model maia-%d at T=%.2f%s",
+            "game %s: playing %s against %s (%d) -> opponent model maia2@%d at T=%.2f%s",
             game_id,
             "white" if my_color == chess.WHITE else "black",
             opponent_name,
@@ -512,7 +514,7 @@ def main() -> int:
 
     import berserk
 
-    from src.engine import MaiaEvaluator, StockfishEvaluator
+    from src.engine import Maia2Evaluator, StockfishEvaluator
     from src.engine.book import OpeningBook
 
     parser = argparse.ArgumentParser(prog="python -m src.lichess.bot", description="Lichess bot bridge.")
@@ -541,7 +543,7 @@ def main() -> int:
 
     with (
         StockfishEvaluator() as stockfish,
-        MaiaEvaluator(engine_config.DEFAULT_MAIA_RATING) as maia,
+        Maia2Evaluator(engine_config.DEFAULT_MAIA_RATING) as maia,
         OpeningBook() as book,
     ):
         bot = LichessBot(

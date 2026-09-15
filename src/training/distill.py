@@ -436,7 +436,7 @@ def main() -> int:
     logging.getLogger("chess.engine").setLevel(logging.ERROR)
 
     if not args.train_only:
-        from src.engine.maia import MaiaEvaluator
+        from src.engine import Maia2Evaluator
 
         rng = random.Random(args.seed)
         books = [engine_config.trap_book_path(), engine_config.standard_book_path()]
@@ -446,7 +446,7 @@ def main() -> int:
         # rather than a constant the network can ignore.
         ratings = [rng.choice(bands) for _ in positions]
         order = sorted(range(len(positions)), key=lambda i: ratings[i])
-        with MaiaEvaluator(bands[0]) as maia:
+        with Maia2Evaluator(bands[0]) as maia:
             build_corpus([positions[i] for i in order], [ratings[i] for i in order], maia, args.corpus)
 
     if args.build_only:
