@@ -195,15 +195,34 @@ class SearchConfig:
     costs 584ms and is *worse*. Classifying a 200cp loss is a coarse call."""
 
     beta_weight: float = 0.0
-    """Gamma on blunder potential. Anderson et al. measure beta as skill-*free*
-    danger: the chance a uniformly random mover errs. It generalises to 2700
-    players precisely because it ignores who is moving. Zero reproduces the
-    pre-Milestone-10 utility exactly."""
+    """Gamma on blunder potential. **Measured not to work, and left at zero.**
+
+    Anderson et al. measure beta as skill-*free* danger: the chance a uniformly
+    random mover errs. Steering by it does move the search -- over 30 self-play
+    games against maia2@1700, mean beta faced rose 0.397 -> 0.495 as gamma went
+    0 -> 600 -- but the opponent's blunder rate did not follow (0.149 -> 0.153,
+    inside one standard error) and the blunders got *cheaper* (452cp -> 311cp).
+
+    The reason is that beta counts what share of *legal moves* are blunders,
+    while Maia concentrates its probability on good ones. Raising the share does
+    not raise the mass, and counting blunders by number rather than severity
+    trades away the positions whose one available blunder is fatal. Use
+    ``blunder_mass_weight`` instead."""
 
     blunder_mass_weight: float = 0.0
-    """Delta on Maia-weighted blunder mass -- the probability *this* opponent
-    picks a blundering reply. Complements beta rather than replacing it: beta is
-    the position's danger, this is the danger to the player in front of us."""
+    """Delta on Maia-weighted blunder mass: the probability *this* opponent puts
+    on a blundering reply, rather than the share of moves that are blunders.
+
+    Targets the right quantity and still does not clearly work. Over 30 games
+    delta=1200 looked strong, lifting the opponent's blunder rate 0.149 -> 0.192;
+    at 90 games the same comparison shrank to 0.159 -> 0.170, about +7% and
+    1.5 standard errors on ~2,700 opponent moves. It also cheapens the errors
+    the way beta does (453cp -> 390cp).
+
+    Treat the effect as unproven rather than absent: separating +7% from zero
+    needs roughly 600 games per arm, which nobody has run. Zero reproduces the
+    pre-Milestone-10 ranking exactly, and zero is the honest default until that
+    experiment exists."""
 
     def __post_init__(self) -> None:
         if self.safety_threshold < 0:
