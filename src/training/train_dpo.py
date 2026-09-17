@@ -46,9 +46,11 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 from src.training.model import (
+    ENGINE_FEATURE_WIDTH,
     INPUT_PLANES,
     POLICY_SIZE,
     TrapPolicyNet,
+    TrapScorer,
     encode_board,
     legal_move_mask,
     move_to_index,
@@ -62,6 +64,7 @@ __all__ = [
     "preference_loss",
     "select_device",
     "train",
+    "train_scorer",
     "main",
 ]
 
@@ -455,6 +458,11 @@ def main() -> int:
     parser.add_argument("--anchor-weight", type=float, default=DEFAULT_ANCHOR_WEIGHT,
                         help="0.0 reproduces the brief's loss exactly.")
     parser.add_argument("--device", default=None, help="cuda / mps / cpu (default: best available).")
+    parser.add_argument("--late-fusion", action="store_true",
+                        help="Train the engine-annotated TrapScorer over a frozen prior "
+                             "instead of fine-tuning the convolutional network.")
+    parser.add_argument("--scorer-hidden", type=int, default=96,
+                        help="Hidden width of the late-fusion MLP.")
     parser.add_argument("--residual-hidden", type=int, default=0,
                         help="Hidden width of the residual head. 0 keeps it a 1x1 conv, "
                              "which adds no capacity over the policy head it sits beside.")
@@ -479,6 +487,23 @@ def main() -> int:
     if warm is not None and args.lr == DEFAULT_LEARNING_RATE:
         learning_rate = DEFAULT_WARM_LEARNING_RATE
 
+    if args.late_fusion:
+        if warm is None:
+            logger.error("train: --late-fusion needs a --warm-start prior to sit on")
+            return 1
+        summary = train_scorer(
+            args.dataset, args.checkpoint, warm,
+            TrainConfig(
+                epochs=args.epochs, batch_size=args.batch_size,
+                learning_rate=learning_rate, beta=args.beta,
+            ),
+            device=select_device(args.device) if args.device else None,
+            hidden=args.scorer_hidden,
+        )
+        logger.info("train: best val_pref %.4f at epoch %d",
+                    summary["best_val_pref"], summary["best_epoch"])
+        return 0
+
     config = TrainConfig(
         epochs=args.epochs, batch_size=args.batch_size, learning_rate=learning_rate,
         beta=args.beta, anchor_weight=args.anchor_weight,
@@ -492,6 +517,223 @@ def main() -> int:
     train(args.dataset, args.checkpoint, config, device=device, warm_start=warm)
     return 0
 
+
+
+# --- late fusion -----------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FusedSample:
+    planes: Tensor
+    chosen: int
+    rejected: int
+    chosen_features: Tensor
+    rejected_features: Tensor
+
+
+class AnnotatedDataset(Dataset[FusedSample]):
+    """Preference pairs carrying per-move engine features.
+
+    Records without ``chosen_features`` are skipped rather than zero-filled: an
+    all-zero feature vector reads as "a balanced position the engine likes",
+    which is the opposite of what a missing annotation means.
+    """
+
+    def __init__(self, records: Sequence[Dict[str, Any]]) -> None:
+        self.samples: List[FusedSample] = []
+        skipped = 0
+        for record in records:
+            sample = self._encode(record)
+            if sample is None:
+                skipped += 1
+                continue
+            self.samples.append(sample)
+        if skipped:
+            logger.warning("dataset: skipped %d records without engine features", skipped)
+        if not self.samples:
+            raise ValueError("no annotated preference records; run src.training.annotate first")
+
+    @staticmethod
+    def _encode(record: Dict[str, Any]) -> Optional[FusedSample]:
+        chosen_features = record.get("chosen_features")
+        rejected_features = record.get("rejected_features")
+        if not isinstance(chosen_features, list) or not isinstance(rejected_features, list):
+            return None
+        if len(chosen_features) != ENGINE_FEATURE_WIDTH:
+            return None
+        if len(rejected_features) != ENGINE_FEATURE_WIDTH:
+            return None
+        try:
+            board = chess.Board(str(record["fen"]))
+            chosen = board.parse_san(str(record["chosen"]))
+            rejected = board.parse_san(str(record["rejected"]))
+        except (KeyError, ValueError):
+            return None
+        if chosen == rejected:
+            return None
+        return FusedSample(
+            planes=encode_board(board, int(record.get("opponent_rating", 1500))),
+            chosen=move_to_index(chosen),
+            rejected=move_to_index(rejected),
+            chosen_features=torch.tensor(chosen_features, dtype=torch.float32),
+            rejected_features=torch.tensor(rejected_features, dtype=torch.float32),
+        )
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> FusedSample:
+        return self.samples[index]
+
+
+def collate_fused(batch: Sequence[FusedSample]) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    return (
+        torch.stack([sample.planes for sample in batch]),
+        torch.tensor([sample.chosen for sample in batch], dtype=torch.long),
+        torch.tensor([sample.rejected for sample in batch], dtype=torch.long),
+        torch.stack([sample.chosen_features for sample in batch]),
+        torch.stack([sample.rejected_features for sample in batch]),
+    )
+
+
+def _fused_epoch(
+    prior: TrapPolicyNet,
+    scorer: TrapScorer,
+    loader: DataLoader[FusedSample],
+    config: TrainConfig,
+    device: torch.device,
+    optimiser: Optional[torch.optim.Optimizer],
+) -> Tuple[float, float]:
+    """One pass. Returns ``(loss, preference accuracy)`` on the fused score.
+
+    There is no anchor term here and none is needed. The anchor existed because
+    a bare pairwise loss leaves 4,094 of 4,096 logits without a gradient, so the
+    softmax was not a distribution. Under late fusion the distribution comes
+    from the frozen prior and never moves; the scorer only re-ranks candidates.
+    """
+    training = optimiser is not None
+    scorer.train(training)
+    prior.eval()
+    totals = [0.0, 0.0]
+    seen = 0
+
+    for planes, chosen, rejected, chosen_features, rejected_features in loader:
+        planes = planes.to(device)
+        chosen, rejected = chosen.to(device), rejected.to(device)
+        chosen_features = chosen_features.to(device)
+        rejected_features = rejected_features.to(device)
+
+        with torch.no_grad():
+            logits = prior(planes)
+            chosen_prior = logits.gather(1, chosen.unsqueeze(1)).squeeze(1)
+            rejected_prior = logits.gather(1, rejected.unsqueeze(1)).squeeze(1)
+
+        with torch.set_grad_enabled(training):
+            chosen_score = chosen_prior + scorer(chosen_prior, chosen_features)
+            rejected_score = rejected_prior + scorer(rejected_prior, rejected_features)
+            gap = chosen_score - rejected_score
+            loss = -F.logsigmoid(config.beta * gap).mean()
+
+        if training and optimiser is not None:
+            optimiser.zero_grad(set_to_none=True)
+            loss.backward()  # type: ignore[no-untyped-call]
+            optimiser.step()
+
+        count = planes.shape[0]
+        totals[0] += float(loss.item()) * count
+        totals[1] += float((gap > 0).float().mean().item()) * count
+        seen += count
+
+    if seen == 0:
+        return 0.0, 0.0
+    return totals[0] / seen, totals[1] / seen
+
+
+def train_scorer(
+    dataset_path: Path,
+    checkpoint_path: Path,
+    warm_start: Path,
+    config: Optional[TrainConfig] = None,
+    *,
+    device: Optional[torch.device] = None,
+    hidden: int = 96,
+) -> Dict[str, Any]:
+    """Train the late-fusion scorer over a frozen distilled prior."""
+    settings = config if config is not None else TrainConfig()
+    torch.manual_seed(settings.seed)
+    random.seed(settings.seed)
+    target = device if device is not None else select_device()
+
+    records = [json.loads(line) for line in dataset_path.read_text().splitlines() if line.strip()]
+    dataset = AnnotatedDataset(records)
+
+    indices = list(range(len(dataset)))
+    random.shuffle(indices)
+    split = max(1, int(len(indices) * settings.validation_fraction))
+    validation_ids, training_ids = indices[:split], indices[split:]
+
+    train_loader: DataLoader[FusedSample] = DataLoader(
+        torch.utils.data.Subset(dataset, training_ids),
+        batch_size=settings.batch_size, shuffle=True, collate_fn=collate_fused,
+    )
+    validation_loader: DataLoader[FusedSample] = DataLoader(
+        torch.utils.data.Subset(dataset, validation_ids),
+        batch_size=settings.batch_size, shuffle=False, collate_fn=collate_fused,
+    )
+
+    prior, channels, blocks = load_warm_start(warm_start, target)
+    prior.freeze_prior()
+    scorer = TrapScorer(hidden=hidden).to(target)
+    optimiser = torch.optim.AdamW(
+        scorer.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
+    )
+    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=max(1, settings.epochs))
+    logger.info(
+        "scorer: %d records (%d train / %d val) on %s, %s scorer parameters over a frozen %s prior",
+        len(dataset), len(training_ids), len(validation_ids), target,
+        f"{scorer.parameter_count:,}", f"{prior.parameter_count:,}",
+    )
+
+    history: List[Dict[str, Any]] = []
+    best_state: Optional[Dict[str, Tensor]] = None
+    best_pref = -1.0
+    best_epoch = 0
+    for epoch in range(1, settings.epochs + 1):
+        loss, pref = _fused_epoch(prior, scorer, train_loader, settings, target, optimiser)
+        schedule.step()
+        val_loss, val_pref = _fused_epoch(prior, scorer, validation_loader, settings, target, None)
+        entry = {
+            "epoch": epoch, "loss": round(loss, 4), "pref_acc": round(pref, 4),
+            "val_loss": round(val_loss, 4), "val_pref": round(val_pref, 4),
+        }
+        history.append(entry)
+        if val_pref > best_pref:
+            best_pref, best_epoch = val_pref, epoch
+            best_state = {k: v.detach().cpu().clone() for k, v in scorer.state_dict().items()}
+        if epoch % max(1, settings.epochs // 10) == 0 or epoch == 1:
+            logger.info("scorer: %s", entry)
+
+    if best_state is not None and best_epoch != settings.epochs:
+        logger.info("scorer: restoring epoch %d (val_pref=%.4f)", best_epoch, best_pref)
+        scorer.load_state_dict(best_state)
+
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "version": CHECKPOINT_VERSION,
+            "state_dict": scorer.state_dict(),
+            "hidden": hidden,
+            "prior": str(warm_start),
+            "channels": channels,
+            "blocks": blocks,
+            "stage": "fused",
+            "records": len(dataset),
+            "config": asdict(settings),
+        },
+        checkpoint_path,
+    )
+    logger.info("scorer: wrote %s", checkpoint_path)
+    return {"history": history, "best_epoch": best_epoch, "best_val_pref": best_pref}
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -617,3 +617,37 @@ def test_engine_features_are_bounded_and_ordered() -> None:
     assert blunder.as_vector()[1] > mate.as_vector()[1], "a worse move loses more"
     assert blunder.as_vector()[2] > vector[2], "a worse move ranks lower"
 
+
+def test_records_without_engine_features_are_skipped_not_zero_filled() -> None:
+    """An all-zero feature vector reads as a balanced position the engine likes."""
+    from src.training.train_dpo import AnnotatedDataset
+
+    good = {
+        "fen": chess.Board().fen(), "chosen": "e4", "rejected": "d4",
+        "opponent_rating": 1500,
+        "chosen_features": [0.1, 0.2, 0.3, 1.0],
+        "rejected_features": [0.4, 0.0, 0.1, 0.0],
+    }
+    missing = {k: v for k, v in good.items() if k != "chosen_features"}
+    wrong_width = dict(good, chosen_features=[0.1, 0.2])
+
+    assert len(AnnotatedDataset([good, missing, wrong_width])) == 1
+
+    with pytest.raises(ValueError):
+        AnnotatedDataset([missing])
+
+
+def test_an_annotated_sample_carries_both_feature_vectors() -> None:
+    from src.training.train_dpo import AnnotatedDataset
+
+    record = {
+        "fen": chess.Board().fen(), "chosen": "e4", "rejected": "d4",
+        "opponent_rating": 1500,
+        "chosen_features": [0.1, 0.2, 0.3, 1.0],
+        "rejected_features": [0.4, 0.0, 0.1, 0.0],
+    }
+    sample = AnnotatedDataset([record])[0]
+    assert sample.chosen_features.shape == (ENGINE_FEATURE_WIDTH,)
+    assert sample.rejected_features.shape == (ENGINE_FEATURE_WIDTH,)
+    assert sample.chosen != sample.rejected
+
