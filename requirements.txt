@@ -19,3 +19,10 @@ maia2==0.10.0
 pyzstd==0.19.1
 gdown==6.2.0
 einops==0.8.2
+
+# Maia-3 is the opponent model in use: continuous rating, no ceiling. It is not
+# on PyPI and is AGPL-3.0, unlike the MIT packages above:
+#   git clone https://github.com/CSSLab/maia3 && pip install ./maia3
+#   maia3-cache --model maia3-5m
+# Maia-2 is kept for the distillation corpus and as a fallback.
+# maia3==0.1.0  (install from source, see above)

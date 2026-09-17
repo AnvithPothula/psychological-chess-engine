@@ -483,7 +483,7 @@ def run_with_restarts(
     A restart that completes no games is treated as a hard failure rather than a
     hiccup: retrying a missing binary forever is not resilience.
     """
-    from src.engine import Maia2Evaluator, StockfishEvaluator
+    from src.engine import Maia3Evaluator, StockfishEvaluator
     from src.engine.book import OpeningBook
     from src import config as engine_config
 
@@ -500,7 +500,7 @@ def run_with_restarts(
         attempt = replace(settings, games=batch)
         with (
             StockfishEvaluator() as stockfish,
-            Maia2Evaluator(settings.opponent_rating) as maia,
+            Maia3Evaluator(settings.opponent_rating) as maia,
             OpeningBook(opponent_rating=settings.opponent_rating) as book,
         ):
             generator = DPOGenerator(
@@ -553,7 +553,7 @@ def main() -> int:
     """Entry point: ``python -m src.training.dpo_generator``."""
     import argparse
 
-    from src.engine import Maia2Evaluator, StockfishEvaluator
+    from src.engine import Maia3Evaluator, StockfishEvaluator
     from src.engine.book import OpeningBook
 
     parser = argparse.ArgumentParser(prog="python -m src.training.dpo_generator")
@@ -592,7 +592,7 @@ def main() -> int:
 
         with (
             StockfishEvaluator() as stockfish,
-            Maia2Evaluator(args.rating) as maia,
+            Maia3Evaluator(args.rating) as maia,
             OpeningBook(opponent_rating=args.rating) as book,
         ):
             generator = DPOGenerator(

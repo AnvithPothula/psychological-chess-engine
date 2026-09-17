@@ -413,41 +413,6 @@ if __name__ == "__main__":
     raise SystemExit(_main())
 
 
-def test_opponent_temperature_sharpens_only_above_maias_ceiling() -> None:
-    """Maia is calibrated at its own bands; sharpening there would break it."""
-    for rating in engine_config.AVAILABLE_MAIA_RATINGS:
-        assert engine_config.opponent_temperature(rating) == 1.0
-
-    above = [engine_config.opponent_temperature(r) for r in (2000, 2200, 2400, 2600)]
-    assert above == sorted(above, reverse=True), above
-    assert all(t < 1.0 for t in above)
-    assert engine_config.opponent_temperature(5000) == engine_config.MIN_OPPONENT_TEMPERATURE
-
-
-def test_the_search_sharpens_the_model_for_a_strong_opponent() -> None:
-    """A 2400 is modelled by maia-1900, so the policy has to be sharpened."""
-    seen: List[Optional[float]] = []
-
-    class RecordingModel(ScriptedHumanModel):
-        def predict_move_probabilities(
-            self, board: chess.Board, *, temperature: Optional[float] = None
-        ) -> MoveDistribution:
-            seen.append(temperature)
-            return super().predict_move_probabilities(board, temperature=temperature)
-
-    evaluator = ScriptedEvaluator({}, {}, default_cp=0)
-    searcher = AdversarialSearcher(evaluator, RecordingModel({}))
-
-    searcher.opponent_rating = 1500
-    searcher.search(chess.Board())
-    assert seen and all(t == 1.0 for t in seen), seen
-
-    seen.clear()
-    searcher.opponent_rating = 2400
-    searcher.search(chess.Board())
-    assert seen and all(t is not None and t < 1.0 for t in seen), seen
-
-
 def test_blunder_potential_counts_losing_replies() -> None:
     """beta is the share of the mover's legal replies that shed the threshold."""
     board = chess.Board("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1")

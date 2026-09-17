@@ -20,6 +20,7 @@ class EngineAnalysisError(EvaluatorError):
 from src.engine.cache import EvalCache  # noqa: E402
 from src.engine.maia import MaiaEvaluator  # noqa: E402
 from src.engine.maia2_model import Maia2Evaluator  # noqa: E402
+from src.engine.maia3_model import Maia3Evaluator  # noqa: E402
 from src.engine.stockfish import StockfishEvaluator  # noqa: E402
 from src.engine.search import AdversarialSearcher, TerminalPositionError  # noqa: E402
 
@@ -30,6 +31,7 @@ __all__ = [
     "EvalCache",
     "EvaluatorError",
     "Maia2Evaluator",
+    "Maia3Evaluator",
     "MaiaEvaluator",
     "StockfishEvaluator",
     "TerminalPositionError",

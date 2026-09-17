@@ -512,9 +512,7 @@ class AdversarialSearcher:
             objective_score = self._evaluate_bot(board, bot_color, settings.leaf_depth)
 
             replies = truncate_distribution(
-                self.human_model.predict_move_probabilities(
-                    board, temperature=engine_config.opponent_temperature(self.opponent_rating)
-                ),
+                self.human_model.predict_move_probabilities(board),
                 min_probability=settings.min_reply_probability,
                 target_mass=settings.target_reply_mass,
                 max_replies=settings.max_replies,

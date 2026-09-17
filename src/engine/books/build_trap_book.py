@@ -305,7 +305,7 @@ def measure(leaf_depth: int = 12, path_floor: float = 1e-4) -> Dict[str, object]
 
     Engines are imported here so a plain book build stays free of them.
     """
-    from src.engine import Maia2Evaluator, StockfishEvaluator
+    from src.engine import Maia3Evaluator, StockfishEvaluator
     from src.engine.search import AdversarialSearcher
     from src.types import SearchConfig
 
@@ -316,7 +316,7 @@ def measure(leaf_depth: int = 12, path_floor: float = 1e-4) -> Dict[str, object]
         for line in TRAP_LINES
     }
 
-    with StockfishEvaluator() as stockfish, Maia2Evaluator(RATING_BANDS[0]) as maia:
+    with StockfishEvaluator() as stockfish, Maia3Evaluator(RATING_BANDS[0]) as maia:
         searcher = AdversarialSearcher(stockfish, maia, config=settings)
         for band in RATING_BANDS:
             maia.set_rating(band)
