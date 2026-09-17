@@ -435,3 +435,72 @@ def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
+
+# --- Matilda residual head --------------------------------------------------
+
+
+def test_a_fresh_residual_head_is_exactly_zero() -> None:
+    """Zero init is the whole guarantee: untrained, it contributes nothing."""
+    net = TrapPolicyNet(channels=16, blocks=1)
+    assert torch.count_nonzero(net.residual.weight) == 0
+    assert net.residual.bias is not None
+    assert torch.count_nonzero(net.residual.bias) == 0
+
+    planes = torch.randn(3, INPUT_PLANES, 8, 8)
+    net.eval()
+    with torch.no_grad():
+        features = net.trunk(planes)
+        assert torch.count_nonzero(net.residual(features)) == 0
+        prior_only = net.policy(features).flatten(start_dim=1)
+        assert torch.equal(net(planes), prior_only)
+
+
+def test_freezing_the_prior_routes_every_gradient_to_the_residual() -> None:
+    """DPO must not be able to move the distilled representation."""
+    net = TrapPolicyNet(channels=16, blocks=1)
+    net.freeze_prior()
+    net.train()
+
+    planes = torch.randn(4, INPUT_PLANES, 8, 8)
+    net(planes).sum().backward()
+
+    for name, parameter in net.named_parameters():
+        if name.startswith("residual."):
+            assert parameter.requires_grad, name
+            assert parameter.grad is not None and torch.count_nonzero(parameter.grad) > 0, name
+        else:
+            assert not parameter.requires_grad, name
+            assert parameter.grad is None, f"{name} received a gradient"
+
+    trainable = {id(parameter) for parameter in net.residual_parameters}
+    assert trainable == {id(p) for p in net.parameters() if p.requires_grad}
+
+
+def test_a_frozen_trunk_cannot_drift_through_batchnorm() -> None:
+    """requires_grad is not enough: BatchNorm updates running stats in train()."""
+    net = TrapPolicyNet(channels=16, blocks=1)
+    net.freeze_prior()
+    net.train()  # must not re-enable the frozen modules
+
+    before = [
+        buffer.clone() for name, buffer in net.named_buffers() if "running_" in name
+    ]
+    for _ in range(3):
+        net(torch.randn(4, INPUT_PLANES, 8, 8))
+    after = [buffer for name, buffer in net.named_buffers() if "running_" in name]
+
+    assert before, "expected BatchNorm running statistics to exist"
+    assert all(torch.equal(a, b) for a, b in zip(before, after)), "the prior drifted"
+
+
+def test_a_pre_residual_checkpoint_still_loads() -> None:
+    """Checkpoints distilled before the head existed carry no residual tensors."""
+    net = TrapPolicyNet(channels=16, blocks=1)
+    legacy = {k: v for k, v in net.state_dict().items() if not k.startswith("residual.")}
+
+    fresh = TrapPolicyNet(channels=16, blocks=1)
+    missing, unexpected = fresh.load_state_dict(legacy, strict=False)
+    assert not unexpected
+    assert all(name.startswith("residual.") for name in missing)
+    assert torch.count_nonzero(fresh.residual.weight) == 0

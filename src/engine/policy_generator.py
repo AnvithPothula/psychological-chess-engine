@@ -106,7 +106,15 @@ class NeuralCandidateGenerator:
             channels=int(payload.get("channels", 64)), blocks=int(payload.get("blocks", 4))
         )
         try:
-            model.load_state_dict(payload["state_dict"])
+            # A checkpoint written before the residual head existed carries no
+            # residual.* tensors; zero is the right value for them, and a zero
+            # residual reproduces the distilled prior exactly.
+            missing, unexpected = model.load_state_dict(payload["state_dict"], strict=False)
+            if unexpected or any(not name.startswith("residual.") for name in missing):
+                raise PolicyUnavailableError(
+                    f"{path} does not match this architecture "
+                    f"(missing={sorted(missing)}, unexpected={sorted(unexpected)})"
+                )
         except (KeyError, RuntimeError) as exc:
             raise PolicyUnavailableError(f"{path} does not match TrapPolicyNet: {exc}") from exc
         return model.to(device)

@@ -185,15 +185,62 @@ class TrapPolicyNet(nn.Module):
         self.tower = nn.Sequential(*(ResidualBlock(channels) for _ in range(blocks)))
         self.policy = nn.Conv2d(channels, NUM_SQUARES, kernel_size=1)
 
+        # Matilda's zero-initialised residual. Before it is trained it
+        # contributes exactly nothing, so the network reproduces the distilled
+        # prior logit-for-logit and alignment can only add to it. Milestone 8
+        # trained the policy head directly and the preferred move's likelihood
+        # fell -- displacement in the sense of Razin et al., which a head that
+        # starts at the prior and is regularised towards it cannot cause.
+        self.residual = nn.Conv2d(channels, NUM_SQUARES, kernel_size=1)
+        nn.init.zeros_(self.residual.weight)
+        assert self.residual.bias is not None
+        nn.init.zeros_(self.residual.bias)
+
+        self._prior_frozen = False
+
+    def trunk(self, x: torch.Tensor) -> torch.Tensor:
+        """Distilled feature extractor: ``[B, planes, 8, 8]`` -> ``[B, C, 8, 8]``."""
+        features: torch.Tensor = self.tower(self.stem(x))
+        return features
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """``[B, INPUT_PLANES, 8, 8]`` -> ``[B, POLICY_SIZE]`` raw logits."""
         if x.dim() != 4 or x.shape[1] != INPUT_PLANES or x.shape[2:] != (BOARD_SIZE, BOARD_SIZE):
             raise ValueError(
                 f"expected [B, {INPUT_PLANES}, {BOARD_SIZE}, {BOARD_SIZE}], got {tuple(x.shape)}"
             )
-        features = self.tower(self.stem(x))
-        logits: torch.Tensor = self.policy(features).flatten(start_dim=1)
+        features = self.trunk(x)
+        logits: torch.Tensor = (self.policy(features) + self.residual(features)).flatten(start_dim=1)
         return logits
+
+    # -- alignment ----------------------------------------------------------
+
+    def freeze_prior(self) -> None:
+        """Hold the distilled representation still; train only the residual.
+
+        Clearing ``requires_grad`` is necessary and not sufficient: the trunk's
+        BatchNorm layers keep updating their running statistics in training
+        mode, which drifts the prior even when no gradient reaches it. The
+        frozen modules are therefore pinned to eval, and ``train()`` is
+        overridden so a later ``model.train()`` cannot quietly undo it.
+        """
+        self._prior_frozen = True
+        for module in (self.stem, self.tower, self.policy):
+            for parameter in module.parameters():
+                parameter.requires_grad_(False)
+            module.eval()
+
+    def train(self, mode: bool = True) -> "TrapPolicyNet":
+        super().train(mode)
+        if self._prior_frozen:
+            for module in (self.stem, self.tower, self.policy):
+                module.eval()
+        return self
+
+    @property
+    def residual_parameters(self) -> List[nn.Parameter]:
+        """The only parameters DPO is allowed to move once the prior is frozen."""
+        return list(self.residual.parameters())
 
     @property
     def parameter_count(self) -> int:

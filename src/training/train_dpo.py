@@ -263,10 +263,18 @@ def load_warm_start(
     channels = int(payload.get("channels", 64))
     blocks = int(payload.get("blocks", 4))
     model = TrapPolicyNet(channels=channels, blocks=blocks)
-    model.load_state_dict(payload["state_dict"])
+    # A checkpoint distilled before the residual head existed carries no
+    # residual.* tensors. Leaving them at their zero initialisation is exactly
+    # the intended state: the network reproduces the prior until DPO moves it.
+    missing, unexpected = model.load_state_dict(payload["state_dict"], strict=False)
+    if unexpected:
+        raise ValueError(f"{path} carries unknown tensors: {sorted(unexpected)}")
+    if any(not name.startswith("residual.") for name in missing):
+        raise ValueError(f"{path} is missing prior tensors: {sorted(missing)}")
     logger.info(
-        "train: warm start from %s (stage=%s, metrics=%s)",
+        "train: warm start from %s (stage=%s, metrics=%s)%s",
         path.name, payload.get("stage", "?"), payload.get("metrics", {}),
+        " [residual head zero-initialised]" if missing else "",
     )
     return model.to(device), channels, blocks
 
@@ -308,14 +316,26 @@ def train(
 
     if warm_start is not None:
         model, channels, blocks = load_warm_start(warm_start, target)
+        # Matilda: the distilled representation is the only chess knowledge in
+        # the system, so alignment does not get to touch it. Freezing the trunk
+        # and the policy head leaves the zero-initialised residual as the sole
+        # degree of freedom, which bounds what DPO can destroy -- Milestone 8
+        # trained the head directly and the preferred move's likelihood fell.
+        model.freeze_prior()
+        trainable = model.residual_parameters
     else:
         model = TrapPolicyNet(channels=channels, blocks=blocks).to(target)
+        trainable = list(model.parameters())
     optimiser = torch.optim.AdamW(
-        model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
+        trainable, lr=settings.learning_rate, weight_decay=settings.weight_decay
     )
     # Cosine annealing to near-zero: the last epochs should barely move a warm
     # trunk, which is what keeps the distilled representation intact.
     schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=max(1, settings.epochs))
+    logger.info(
+        "train: %s of %s parameters trainable",
+        f"{sum(p.numel() for p in trainable):,}", f"{model.parameter_count:,}",
+    )
     logger.info(
         "train: %d records (%d train / %d val) on %s, %s parameters",
         len(dataset), len(training_ids), len(validation_ids), target, f"{model.parameter_count:,}",
