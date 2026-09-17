@@ -17,12 +17,16 @@ from pathlib import Path
 from typing import List
 
 import chess
+import pytest
 import torch
 import torch.nn.functional as F
 
 from src.engine.policy_generator import NeuralCandidateGenerator, PolicyUnavailableError
 from src.training.dedup import deduplicate, position_key
+from src.training.annotate import CP_CLAMP, MoveFeatures
 from src.training.model import (
+    ENGINE_FEATURE_WIDTH,
+    TrapScorer,
     INPUT_PLANES,
     POLICY_SIZE,
     PLANE_LEGAL,
@@ -556,4 +560,60 @@ def test_releasing_the_policy_head_keeps_the_trunk_frozen() -> None:
             assert parameter.grad is None, f"{name} received a gradient"
     released = [n for n, q in net.named_parameters() if q.requires_grad and n.startswith("policy.")]
     assert released, "the policy head should be trainable when it is not frozen"
+
+
+# --- late-fusion re-ranker --------------------------------------------------
+
+
+def test_an_untrained_scorer_returns_exactly_zero() -> None:
+    """Same guarantee as the residual head: it starts at the distilled prior."""
+    scorer = TrapScorer()
+    priors = torch.randn(7)
+    features = torch.randn(7, ENGINE_FEATURE_WIDTH)
+    with torch.no_grad():
+        assert torch.count_nonzero(scorer(priors, features)) == 0
+
+
+def test_the_scorer_reads_engine_evidence_once_trained() -> None:
+    """After the output layer leaves zero, features must change the modifier."""
+    scorer = TrapScorer()
+    with torch.no_grad():
+        for parameter in scorer.stack[-1].parameters():
+            parameter.add_(0.1)
+
+    priors = torch.zeros(2)
+    losing = torch.tensor([[-5.0, 5.0, 0.9, 0.0], [-5.0, 5.0, 0.9, 0.0]])
+    winning = torch.tensor([[5.0, 0.0, 0.05, 1.0], [5.0, 0.0, 0.05, 1.0]])
+    with torch.no_grad():
+        assert not torch.allclose(scorer(priors, losing), scorer(priors, winning))
+
+
+def test_the_scorer_rejects_mismatched_shapes() -> None:
+    scorer = TrapScorer()
+    with pytest.raises(ValueError):
+        scorer(torch.randn(3), torch.randn(3, ENGINE_FEATURE_WIDTH + 1))
+    with pytest.raises(ValueError):
+        scorer(torch.randn(3), torch.randn(4, ENGINE_FEATURE_WIDTH))
+    with pytest.raises(ValueError):
+        scorer(torch.randn(3, 1), torch.randn(3, ENGINE_FEATURE_WIDTH))
+
+
+def test_the_scorer_is_small_next_to_the_convolutional_alternative() -> None:
+    """The point is evidence, not capacity: this is a fraction of hidden-256."""
+    assert TrapScorer().parameter_count < 20_000
+
+
+def test_engine_features_are_bounded_and_ordered() -> None:
+    """A mate score must not swamp a rank; clamping is what prevents that."""
+    mate = MoveFeatures(centipawns=100_000, loss_vs_best=0, rank=1,
+                        is_top_choice=True, legal_moves=30)
+    vector = mate.as_vector()
+    assert vector[0] == CP_CLAMP, "centipawns must clamp"
+    assert 0.0 < vector[2] <= 1.0, "rank is a fraction of the legal moves"
+    assert vector[3] == 1.0
+
+    blunder = MoveFeatures(centipawns=-800, loss_vs_best=900, rank=25,
+                           is_top_choice=False, legal_moves=30)
+    assert blunder.as_vector()[1] > mate.as_vector()[1], "a worse move loses more"
+    assert blunder.as_vector()[2] > vector[2], "a worse move ranks lower"
 

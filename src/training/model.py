@@ -160,6 +160,73 @@ class ResidualBlock(nn.Module):
         return F.relu(out + residual)
 
 
+ENGINE_FEATURE_WIDTH: Final[int] = 4
+"""Per-move engine evidence: scaled centipawns, scaled loss against best,
+fractional rank, and a top-choice flag. Produced by ``src.training.annotate``."""
+
+SCORER_INPUT_WIDTH: Final[int] = ENGINE_FEATURE_WIDTH + 1
+"""The engine features plus the frozen CNN's logit for the same move."""
+
+
+class TrapScorer(nn.Module):
+    """Late-fusion re-ranker: one scalar adjustment per candidate move.
+
+    The convolutional network has to deduce tactics from board geometry alone,
+    and the capacity sweep showed what that costs -- preference accuracy rose
+    with width right up to the point where the distilled representation started
+    collapsing again. Matilda's ablation says the missing ingredient is not
+    parameters but *evidence*: a centipawn score, a loss against best and a rank
+    for each candidate, which a search already computed and the network was
+    never shown.
+
+    So this reads the prior's own logit for a move alongside that move's engine
+    features and returns a modifier. The final linear layer is zeroed, so an
+    untrained scorer returns exactly zero and the fused score is the distilled
+    prior unchanged -- the same guarantee the residual head carries, and the
+    reason displacement cannot start from here.
+    """
+
+    def __init__(self, hidden: int = 96, layers: int = 2) -> None:
+        super().__init__()
+        if hidden < 1:
+            raise ValueError(f"hidden must be >= 1, got {hidden}")
+        if layers < 1:
+            raise ValueError(f"layers must be >= 1, got {layers}")
+
+        stack: List[nn.Module] = []
+        width = SCORER_INPUT_WIDTH
+        for _ in range(layers):
+            stack.append(nn.Linear(width, hidden))
+            stack.append(nn.ReLU(inplace=True))
+            width = hidden
+        output = nn.Linear(width, 1)
+        nn.init.zeros_(output.weight)
+        assert output.bias is not None
+        nn.init.zeros_(output.bias)
+        stack.append(output)
+        self.stack = nn.Sequential(*stack)
+
+    def forward(self, prior_logit: torch.Tensor, features: torch.Tensor) -> torch.Tensor:
+        """``[B]`` prior logits and ``[B, 4]`` engine features -> ``[B]`` modifiers."""
+        if prior_logit.dim() != 1:
+            raise ValueError(f"expected prior_logit [B], got {tuple(prior_logit.shape)}")
+        if features.dim() != 2 or features.shape[1] != ENGINE_FEATURE_WIDTH:
+            raise ValueError(
+                f"expected features [B, {ENGINE_FEATURE_WIDTH}], got {tuple(features.shape)}"
+            )
+        if features.shape[0] != prior_logit.shape[0]:
+            raise ValueError(
+                f"batch mismatch: {prior_logit.shape[0]} logits, {features.shape[0]} features"
+            )
+        fused = torch.cat([prior_logit.unsqueeze(1), features], dim=1)
+        modifier: torch.Tensor = self.stack(fused).squeeze(1)
+        return modifier
+
+    @property
+    def parameter_count(self) -> int:
+        return sum(parameter.numel() for parameter in self.parameters())
+
+
 class TrapPolicyNet(nn.Module):
     """Small AlphaZero-style trunk with a spatially structured policy head.
 
