@@ -443,9 +443,10 @@ if __name__ == "__main__":
 def test_a_fresh_residual_head_is_exactly_zero() -> None:
     """Zero init is the whole guarantee: untrained, it contributes nothing."""
     net = TrapPolicyNet(channels=16, blocks=1)
-    assert torch.count_nonzero(net.residual.weight) == 0
-    assert net.residual.bias is not None
-    assert torch.count_nonzero(net.residual.bias) == 0
+    final = net.residual[-1]
+    assert torch.count_nonzero(final.weight) == 0
+    assert final.bias is not None
+    assert torch.count_nonzero(final.bias) == 0
 
     planes = torch.randn(3, INPUT_PLANES, 8, 8)
     net.eval()
@@ -503,4 +504,56 @@ def test_a_pre_residual_checkpoint_still_loads() -> None:
     missing, unexpected = fresh.load_state_dict(legacy, strict=False)
     assert not unexpected
     assert all(name.startswith("residual.") for name in missing)
-    assert torch.count_nonzero(fresh.residual.weight) == 0
+    assert torch.count_nonzero(fresh.residual[-1].weight) == 0
+
+
+def test_a_bare_residual_adds_no_capacity_over_the_policy_head() -> None:
+    """Two 1x1 convolutions over the same features sum to one 1x1 convolution.
+
+    This is why unfreezing the policy head beside a width-0 residual cannot
+    recover preference accuracy: it widens the parameter count, not the
+    function class.
+    """
+    net = TrapPolicyNet(channels=16, blocks=1, residual_hidden=0)
+    features = torch.randn(2, 16, 8, 8)
+    merged = torch.nn.Conv2d(16, 64, kernel_size=1)
+    with torch.no_grad():
+        merged.weight.copy_(net.policy.weight + net.residual[-1].weight)
+        assert merged.bias is not None and net.policy.bias is not None
+        merged.bias.copy_(net.policy.bias + net.residual[-1].bias)
+        combined = net.policy(features) + net.residual(features)
+        assert torch.allclose(combined, merged(features), atol=1e-6)
+
+
+def test_a_hidden_layer_keeps_the_zero_guarantee_and_adds_a_non_linearity() -> None:
+    """Only the output layer is zeroed, so the head still starts at the prior."""
+    net = TrapPolicyNet(channels=16, blocks=1, residual_hidden=32)
+    assert torch.count_nonzero(net.residual[-1].weight) == 0
+    assert torch.count_nonzero(net.residual[0].weight) > 0, "the hidden layer must be live"
+
+    planes = torch.randn(3, INPUT_PLANES, 8, 8)
+    net.eval()
+    with torch.no_grad():
+        features = net.trunk(planes)
+        assert torch.count_nonzero(net.residual(features)) == 0
+        assert torch.equal(net(planes), net.policy(features).flatten(start_dim=1))
+
+    assert sum(parameter.numel() for parameter in net.residual_parameters) > 4_160
+
+
+def test_releasing_the_policy_head_keeps_the_trunk_frozen() -> None:
+    """The trunk is the distilled representation and is never trainable."""
+    net = TrapPolicyNet(channels=16, blocks=1, residual_hidden=32)
+    net.freeze_prior(include_policy=False)
+    net.train()
+
+    net(torch.randn(4, INPUT_PLANES, 8, 8)).sum().backward()
+
+    for name, parameter in net.named_parameters():
+        frozen = name.startswith("stem.") or name.startswith("tower.")
+        assert parameter.requires_grad != frozen, name
+        if frozen:
+            assert parameter.grad is None, f"{name} received a gradient"
+    released = [n for n, q in net.named_parameters() if q.requires_grad and n.startswith("policy.")]
+    assert released, "the policy head should be trainable when it is not frozen"
+

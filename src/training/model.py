@@ -16,7 +16,7 @@ of a much larger head for a case that arises in well under 1% of positions.
 
 from __future__ import annotations
 
-from typing import Final, List, Optional, Sequence
+from typing import Final, List, Optional, Sequence, Tuple
 
 import chess
 import torch
@@ -171,10 +171,14 @@ class TrapPolicyNet(nn.Module):
     it learnable.
     """
 
-    def __init__(self, channels: int = 64, blocks: int = 4) -> None:
+    def __init__(
+        self, channels: int = 64, blocks: int = 4, residual_hidden: int = 0
+    ) -> None:
         super().__init__()
         if blocks < 1:
             raise ValueError(f"blocks must be >= 1, got {blocks}")
+        if residual_hidden < 0:
+            raise ValueError(f"residual_hidden must be >= 0, got {residual_hidden}")
         self.channels = channels
         self.blocks = blocks
         self.stem = nn.Sequential(
@@ -191,12 +195,29 @@ class TrapPolicyNet(nn.Module):
         # trained the policy head directly and the preferred move's likelihood
         # fell -- displacement in the sense of Razin et al., which a head that
         # starts at the prior and is regularised towards it cannot cause.
-        self.residual = nn.Conv2d(channels, NUM_SQUARES, kernel_size=1)
-        nn.init.zeros_(self.residual.weight)
-        assert self.residual.bias is not None
-        nn.init.zeros_(self.residual.bias)
+        #
+        # ``residual_hidden`` decides whether that head can express anything the
+        # policy head cannot. At zero it is a 1x1 convolution, and since the
+        # policy head is also a 1x1 convolution over the same frozen features,
+        # their sum collapses to a single 1x1 convolution: a channel mixer with
+        # no non-linearity and no spatial extent. Giving it a hidden 3x3 layer
+        # buys both. Only the last layer is zeroed, which is what preserves the
+        # "starts at the prior" guarantee; the hidden layer keeps a normal
+        # initialisation so it can learn once the output layer leaves zero.
+        self.residual_hidden = residual_hidden
+        final: nn.Conv2d
+        if residual_hidden > 0:
+            hidden = nn.Conv2d(channels, residual_hidden, kernel_size=3, padding=1)
+            final = nn.Conv2d(residual_hidden, NUM_SQUARES, kernel_size=1)
+            self.residual = nn.Sequential(hidden, nn.ReLU(inplace=True), final)
+        else:
+            final = nn.Conv2d(channels, NUM_SQUARES, kernel_size=1)
+            self.residual = nn.Sequential(final)
+        nn.init.zeros_(final.weight)
+        assert final.bias is not None
+        nn.init.zeros_(final.bias)
 
-        self._prior_frozen = False
+        self._frozen: Tuple[nn.Module, ...] = ()
 
     def trunk(self, x: torch.Tensor) -> torch.Tensor:
         """Distilled feature extractor: ``[B, planes, 8, 8]`` -> ``[B, C, 8, 8]``."""
@@ -215,32 +236,44 @@ class TrapPolicyNet(nn.Module):
 
     # -- alignment ----------------------------------------------------------
 
-    def freeze_prior(self) -> None:
-        """Hold the distilled representation still; train only the residual.
+    def freeze_prior(self, *, include_policy: bool = True) -> None:
+        """Hold the distilled representation still.
+
+        Always freezes the convolutional trunk, which is the only chess
+        knowledge in the system. ``include_policy`` also freezes the distilled
+        policy head; releasing it adds parameters but, when the residual is a
+        bare 1x1 convolution, no expressive power at all -- two 1x1 convolutions
+        over the same features sum to one 1x1 convolution.
 
         Clearing ``requires_grad`` is necessary and not sufficient: the trunk's
         BatchNorm layers keep updating their running statistics in training
-        mode, which drifts the prior even when no gradient reaches it. The
-        frozen modules are therefore pinned to eval, and ``train()`` is
-        overridden so a later ``model.train()`` cannot quietly undo it.
+        mode, which drifts the prior even when no gradient reaches it. Frozen
+        modules are therefore pinned to eval, and ``train()`` is overridden so a
+        later ``model.train()`` cannot quietly undo it.
         """
-        self._prior_frozen = True
-        for module in (self.stem, self.tower, self.policy):
+        self._frozen = (self.stem, self.tower, self.policy) if include_policy else (
+            self.stem, self.tower
+        )
+        for module in self._frozen:
             for parameter in module.parameters():
                 parameter.requires_grad_(False)
             module.eval()
 
     def train(self, mode: bool = True) -> "TrapPolicyNet":
         super().train(mode)
-        if self._prior_frozen:
-            for module in (self.stem, self.tower, self.policy):
-                module.eval()
+        for module in self._frozen:
+            module.eval()
         return self
 
     @property
     def residual_parameters(self) -> List[nn.Parameter]:
         """The only parameters DPO is allowed to move once the prior is frozen."""
         return list(self.residual.parameters())
+
+    @property
+    def trainable_parameters(self) -> List[nn.Parameter]:
+        """Everything still carrying a gradient after ``freeze_prior``."""
+        return [parameter for parameter in self.parameters() if parameter.requires_grad]
 
     @property
     def parameter_count(self) -> int:

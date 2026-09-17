@@ -111,6 +111,15 @@ class TrainConfig:
     """Weight on the masked cross-entropy term. Zero reproduces the brief's
     loss exactly, and produces logits that are not a usable distribution."""
 
+    residual_hidden: int = 0
+    """Width of the residual head's hidden 3x3 layer. Zero leaves it a 1x1
+    convolution, which sums with the policy head into a single 1x1 convolution
+    -- a channel mixer that cannot represent a spatial pattern."""
+
+    freeze_policy_head: bool = True
+    """Freeze the distilled policy head alongside the trunk. Releasing it is
+    only meaningful when ``residual_hidden`` is non-zero."""
+
     validation_fraction: float = 0.2
     seed: int = 20260910
 
@@ -248,7 +257,7 @@ def _run_epoch(
 
 
 def load_warm_start(
-    path: Path, device: torch.device
+    path: Path, device: torch.device, *, residual_hidden: int = 0
 ) -> Tuple[TrapPolicyNet, int, int]:
     """Rebuild the distilled network from its checkpoint, shapes checked.
 
@@ -262,7 +271,9 @@ def load_warm_start(
             raise ValueError(f"{path} was built with {key}={actual}, this build expects {expected}")
     channels = int(payload.get("channels", 64))
     blocks = int(payload.get("blocks", 4))
-    model = TrapPolicyNet(channels=channels, blocks=blocks)
+    stored = payload.get("residual_hidden")
+    width = residual_hidden if stored is None else int(stored)
+    model = TrapPolicyNet(channels=channels, blocks=blocks, residual_hidden=width)
     # A checkpoint distilled before the residual head existed carries no
     # residual.* tensors. Leaving them at their zero initialisation is exactly
     # the intended state: the network reproduces the prior until DPO moves it.
@@ -315,16 +326,20 @@ def train(
         )
 
     if warm_start is not None:
-        model, channels, blocks = load_warm_start(warm_start, target)
+        model, channels, blocks = load_warm_start(
+            warm_start, target, residual_hidden=settings.residual_hidden
+        )
         # Matilda: the distilled representation is the only chess knowledge in
-        # the system, so alignment does not get to touch it. Freezing the trunk
-        # and the policy head leaves the zero-initialised residual as the sole
-        # degree of freedom, which bounds what DPO can destroy -- Milestone 8
-        # trained the head directly and the preferred move's likelihood fell.
-        model.freeze_prior()
-        trainable = model.residual_parameters
+        # the system, so alignment does not get to touch it. The trunk is always
+        # frozen; whether the policy head joins it is a setting, because
+        # releasing it only widens the function class when the residual has a
+        # non-linearity of its own.
+        model.freeze_prior(include_policy=settings.freeze_policy_head)
+        trainable = model.trainable_parameters
     else:
-        model = TrapPolicyNet(channels=channels, blocks=blocks).to(target)
+        model = TrapPolicyNet(
+            channels=channels, blocks=blocks, residual_hidden=settings.residual_hidden
+        ).to(target)
         trainable = list(model.parameters())
     optimiser = torch.optim.AdamW(
         trainable, lr=settings.learning_rate, weight_decay=settings.weight_decay
@@ -375,6 +390,10 @@ def train(
             "state_dict": model.state_dict(),
             "channels": channels,
             "blocks": blocks,
+            # Without this a wide residual cannot be rebuilt: the state dict
+            # would carry residual.0/residual.2 tensors the default 1x1 head
+            # has no slots for.
+            "residual_hidden": model.residual_hidden,
             "input_planes": INPUT_PLANES,
             "policy_size": POLICY_SIZE,
             "records": len(dataset),
@@ -436,6 +455,11 @@ def main() -> int:
     parser.add_argument("--anchor-weight", type=float, default=DEFAULT_ANCHOR_WEIGHT,
                         help="0.0 reproduces the brief's loss exactly.")
     parser.add_argument("--device", default=None, help="cuda / mps / cpu (default: best available).")
+    parser.add_argument("--residual-hidden", type=int, default=0,
+                        help="Hidden width of the residual head. 0 keeps it a 1x1 conv, "
+                             "which adds no capacity over the policy head it sits beside.")
+    parser.add_argument("--unfreeze-policy", action="store_true",
+                        help="Train the distilled policy head alongside the residual.")
     parser.add_argument("--diagnose", action="store_true",
                         help="Compare training with and without the anchor term.")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
@@ -458,6 +482,8 @@ def main() -> int:
     config = TrainConfig(
         epochs=args.epochs, batch_size=args.batch_size, learning_rate=learning_rate,
         beta=args.beta, anchor_weight=args.anchor_weight,
+        residual_hidden=args.residual_hidden,
+        freeze_policy_head=not args.unfreeze_policy,
     )
     device = select_device(args.device)
     if args.diagnose:

@@ -103,7 +103,9 @@ class NeuralCandidateGenerator:
                 )
 
         model = TrapPolicyNet(
-            channels=int(payload.get("channels", 64)), blocks=int(payload.get("blocks", 4))
+            channels=int(payload.get("channels", 64)),
+            blocks=int(payload.get("blocks", 4)),
+            residual_hidden=int(payload.get("residual_hidden", 0)),
         )
         try:
             # A checkpoint written before the residual head existed carries no
