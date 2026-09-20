@@ -48,6 +48,14 @@ JUDGE_DEPTH: Final[int] = 6
 """Depth for scoring the opponent's move. Measured at 0.015 mean absolute error
 against a depth-12 reference on beta, for a quarter of depth 8's cost."""
 
+DECISIVE_CP: Final[int] = 300
+"""Bot-relative evaluation that counts as a won game. Anderson's blunder
+threshold is 200; a decisive advantage should clear it by a margin."""
+
+ERROR_CAP: Final[int] = 1000
+"""Single-move errors are capped here. An unclamped mate score is six figures of
+centipawns and one of them would set the mean for a whole arm."""
+
 DEFAULT_PLIES: Final[int] = 60
 DEFAULT_GAMES: Final[int] = 100
 DEFAULT_RATING: Final[int] = 1500
@@ -75,6 +83,17 @@ class GameResult:
     opponent_cp_lost: int
     plies: int
 
+    decisive_ply: Optional[int] = None
+    """Ply where the bot's objective evaluation last crossed ``DECISIVE_CP`` and
+    stayed above it for the rest of the game. ``None`` when it never did.
+
+    Kept as the *last* crossing rather than the first: a bot that reaches +400,
+    gives it back, and re-wins on move 50 did not decide the game on move 12,
+    and scoring the first crossing would say it did."""
+
+    max_opponent_error: int = 0
+    """Largest single centipawn drop the opponent conceded, mate-capped."""
+
     @property
     def blunder_rate(self) -> float:
         return self.opponent_blunders / self.opponent_moves if self.opponent_moves else 0.0
@@ -97,6 +116,23 @@ class ArmSummary:
     mean_cp_lost: float
     opponent_moves: int
     seconds: float
+
+    mean_plies: float = 0.0
+    """Shorter is more lethal, given the win rate is saturated either way."""
+
+    decided: int = 0
+    """Games that reached a decisive advantage and held it."""
+
+    mean_decisive_ply: float = 0.0
+    """Averaged over decided games only. Averaging an undecided game in as its
+    ply cap would reward a bot for never deciding anything."""
+
+    mean_max_error: float = 0.0
+    """Mean of each game's single largest opponent error -- the number that
+    separates one fatal blunder from many cheap ones, which mean cp lost
+    cannot."""
+
+    max_error_stderr: float = 0.0
 
 
 def _judge(
@@ -129,23 +165,38 @@ def play_game(
     searcher = build_searcher(spec, stockfish, opponent, opponent_rating=rating)
     rng = random.Random(game)
     bot_white = game % 2 == 0
+    bot_colour = chess.WHITE if bot_white else chess.BLACK
     board = chess.Board()
     blunders = moves = cp_lost = 0
+    max_error = 0
+    decisive_ply: Optional[int] = None
 
     for _ in range(plies):
         if board.is_game_over():
             break
-        if board.turn == (chess.WHITE if bot_white else chess.BLACK):
+        if board.turn == bot_colour:
             board.push(searcher.search(board, spec.search).move)
+            # The judge already scores this position for the opponent, so the
+            # bot's own standing comes free on the opponent's turn below.
             continue
 
         scores, best, blundering = _judge(stockfish, board)
+        # `best` is the mover's best, and the mover here is the opponent, so the
+        # bot's standing is its negation.
+        if -best >= DECISIVE_CP:
+            if decisive_ply is None:
+                decisive_ply = board.ply()
+        else:
+            decisive_ply = None  # gave it back; this was not the deciding moment
+
         distribution = opponent.predict_move_probabilities(board).probabilities
         candidates = list(distribution)
         played = rng.choices(candidates, weights=[distribution[m] for m in candidates])[0]
         moves += 1
         blunders += played in blundering
-        cp_lost += max(0, best - scores.get(played, best))
+        error = min(ERROR_CAP, max(0, best - scores.get(played, best)))
+        cp_lost += error
+        max_error = max(max_error, error)
         board.push(played)
 
     adjudicated = not board.is_game_over()
@@ -161,6 +212,7 @@ def play_game(
         outcome=white_score if bot_white else 1.0 - white_score,
         adjudicated=adjudicated, opponent_moves=moves, opponent_blunders=blunders,
         opponent_cp_lost=cp_lost, plies=board.ply(),
+        decisive_ply=decisive_ply, max_opponent_error=max_error,
     )
 
 
@@ -202,6 +254,8 @@ def _chunks(games: int, workers: int) -> List[List[int]]:
 
 
 def summarise(arm: str, results: Sequence[GameResult], seconds: float) -> ArmSummary:
+    decisive = [r.decisive_ply for r in results if r.decisive_ply is not None]
+    errors = [float(r.max_opponent_error) for r in results if r.opponent_moves]
     total_moves = sum(result.opponent_moves for result in results)
     total_blunders = sum(result.opponent_blunders for result in results)
     rate = total_blunders / total_moves if total_moves else 0.0
@@ -220,6 +274,13 @@ def summarise(arm: str, results: Sequence[GameResult], seconds: float) -> ArmSum
         ),
         opponent_moves=total_moves,
         seconds=seconds,
+        mean_plies=statistics.fmean(r.plies for r in results) if results else 0.0,
+        decided=len(decisive),
+        mean_decisive_ply=statistics.fmean(decisive) if decisive else 0.0,
+        mean_max_error=statistics.fmean(errors) if errors else 0.0,
+        max_error_stderr=(
+            statistics.stdev(errors) / math.sqrt(len(errors)) if len(errors) > 1 else 0.0
+        ),
     )
 
 
@@ -262,26 +323,51 @@ def safe_workers(requested: Optional[int]) -> int:
     return max(1, min(cores, by_memory))
 
 
+def _delta(name: str, first: float, second: float, stderr: float, lower_is_better: bool) -> str:
+    """One comparison line, with the direction of "better" made explicit."""
+    sigma = (second - first) / stderr if stderr else 0.0
+    verdict = "significant" if abs(sigma) >= 2 else "not significant"
+    direction = ""
+    if abs(sigma) >= 2:
+        better = (second < first) if lower_is_better else (second > first)
+        direction = "  trap better" if better else "  trap worse"
+    return f"  {name:<22}{second - first:+10.2f}{sigma:+8.1f} sigma   {verdict}{direction}"
+
+
 def _report(summaries: Sequence[ArmSummary]) -> None:
-    print(f"\n{'arm':<10}{'games':>7}{'score':>8}{'decisive':>10}"
-          f"{'blunder rate':>15}{'mean cp lost':>14}{'opp moves':>11}{'min':>7}")
+    """Lethality and error metrics together.
+
+    Blunder rate and mean cp lost stay in the table. They are the numbers that
+    exposed the recurring failure -- three separate interventions raised neither
+    the rate nor the cost, and two of them lowered the cost -- and a metric is
+    not worth less for having given an unwelcome answer.
+    """
+    print(f"\n{'arm':<10}{'games':>7}{'score':>8}{'plies':>8}{'decided':>9}"
+          f"{'dec.ply':>9}{'max err':>10}{'blunder rate':>16}{'cp lost':>9}{'min':>7}")
     for summary in summaries:
         print(
-            f"{summary.arm:<10}{summary.games:>7}{summary.score:>8.3f}{summary.decisive:>10}"
-            f"{summary.blunder_rate:>11.4f} +/-{summary.blunder_rate_stderr:.4f}"
-            f"{summary.mean_cp_lost:>14.0f}{summary.opponent_moves:>11}"
-            f"{summary.seconds / 60:>7.1f}"
+            f"{summary.arm:<10}{summary.games:>7}{summary.score:>8.3f}"
+            f"{summary.mean_plies:>8.1f}{summary.decided:>9}"
+            f"{summary.mean_decisive_ply:>9.1f}{summary.mean_max_error:>10.0f}"
+            f"{summary.blunder_rate:>12.4f} +/-{summary.blunder_rate_stderr:.4f}"
+            f"{summary.mean_cp_lost:>9.0f}{summary.seconds / 60:>7.1f}"
         )
-    if len(summaries) == 2:
-        first, second = summaries
-        delta = second.blunder_rate - first.blunder_rate
-        stderr = math.sqrt(first.blunder_rate_stderr ** 2 + second.blunder_rate_stderr ** 2)
-        sigma = delta / stderr if stderr else 0.0
-        print(
-            f"\n  {second.arm} - {first.arm}: {delta:+.4f} blunder rate "
-            f"({sigma:+.1f} sigma). "
-            + ("Significant at 2 sigma." if abs(sigma) >= 2 else "Not significant.")
-        )
+    if len(summaries) != 2:
+        return
+
+    first, second = summaries
+    print(f"\n  {second.arm} minus {first.arm}, 2-sigma bar:")
+    games = math.sqrt(max(1, first.games))
+    decided = math.sqrt(max(1, first.decided))
+    print(_delta("mean plies", first.mean_plies, second.mean_plies,
+                 math.sqrt(2.0) * first.mean_plies / games, True))
+    print(_delta("plies to decisive", first.mean_decisive_ply, second.mean_decisive_ply,
+                 math.sqrt(2.0) * first.mean_decisive_ply / decided, True))
+    print(_delta("max opponent error", first.mean_max_error, second.mean_max_error,
+                 math.sqrt(first.max_error_stderr ** 2 + second.max_error_stderr ** 2), False))
+    print(_delta("blunder rate x100", first.blunder_rate * 100, second.blunder_rate * 100,
+                 100 * math.sqrt(first.blunder_rate_stderr ** 2
+                                 + second.blunder_rate_stderr ** 2), False))
 
 
 def main(argv: Optional[List[str]] = None) -> int:

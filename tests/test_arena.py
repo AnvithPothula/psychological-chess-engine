@@ -14,14 +14,20 @@ from pathlib import Path
 import pytest
 
 from src.engine.bot_factory import ARENA_SEARCH, ARMS, BASELINE, TRAP, BotSpec
-from src.eval.arena import GameResult, _chunks, safe_workers, summarise
+from src.eval.arena import (
+    DECISIVE_CP, ERROR_CAP, GameResult, _chunks, safe_workers, summarise,
+)
 
 
-def _result(arm: str, game: int, *, moves: int, blunders: int, cp: int, outcome: float) -> GameResult:
+def _result(
+    arm: str, game: int, *, moves: int, blunders: int, cp: int, outcome: float,
+    plies: int = 60, decisive_ply: int | None = None, max_error: int = 0,
+) -> GameResult:
     return GameResult(
         arm=arm, game=game, bot_white=game % 2 == 0, outcome=outcome,
         adjudicated=False, opponent_moves=moves, opponent_blunders=blunders,
-        opponent_cp_lost=cp, plies=60,
+        opponent_cp_lost=cp, plies=plies,
+        decisive_ply=decisive_ply, max_opponent_error=max_error,
     )
 
 
@@ -110,3 +116,66 @@ def test_a_spec_carries_its_own_checkpoints() -> None:
     spec = BotSpec(name="custom", description="x", use_scorer=True,
                    scorer_path=Path("a.pth"), prior_path=Path("b.pth"))
     assert spec.scorer_path == Path("a.pth") and spec.prior_path == Path("b.pth")
+
+
+# --- lethality --------------------------------------------------------------
+
+
+def test_undecided_games_do_not_enter_the_decisive_ply_average() -> None:
+    """Counting a never-decided game as its ply cap rewards indecision.
+
+    A bot that never reaches a winning position would otherwise contribute 60
+    plies to the mean and look merely slow rather than ineffective.
+    """
+    results = [
+        _result("trap", 0, moves=20, blunders=2, cp=200, outcome=1.0, decisive_ply=18),
+        _result("trap", 1, moves=30, blunders=1, cp=100, outcome=0.5, decisive_ply=None),
+        _result("trap", 2, moves=25, blunders=3, cp=300, outcome=1.0, decisive_ply=30),
+    ]
+    summary = summarise("trap", results, seconds=1.0)
+
+    assert summary.decided == 2
+    assert summary.mean_decisive_ply == pytest.approx(24.0)
+    assert summary.games == 3, "undecided games still count as games"
+
+
+def test_max_error_separates_one_disaster_from_many_scratches() -> None:
+    """The metric mean cp lost cannot express, which is the point of adding it."""
+    one_disaster = [_result("a", 0, moves=40, blunders=1, cp=900, outcome=1.0, max_error=900)]
+    many_scratches = [_result("b", 0, moves=40, blunders=9, cp=900, outcome=1.0, max_error=100)]
+
+    first, second = summarise("a", one_disaster, 1.0), summarise("b", many_scratches, 1.0)
+    assert first.mean_cp_lost == pytest.approx(second.mean_cp_lost), "identical by mean cp"
+    assert first.mean_max_error > second.mean_max_error, "distinguishable by max error"
+
+
+def test_the_error_cap_keeps_one_mate_from_setting_the_mean() -> None:
+    assert ERROR_CAP == 1000
+    assert DECISIVE_CP == 300
+    capped = [
+        _result("trap", 0, moves=10, blunders=1, cp=ERROR_CAP, outcome=1.0, max_error=ERROR_CAP),
+        _result("trap", 1, moves=10, blunders=0, cp=0, outcome=0.5, max_error=0),
+    ]
+    assert summarise("trap", capped, 1.0).mean_max_error == pytest.approx(ERROR_CAP / 2)
+
+
+def test_an_arm_that_never_decides_reports_zero_rather_than_dividing() -> None:
+    results = [_result("trap", 0, moves=10, blunders=0, cp=0, outcome=0.5, decisive_ply=None)]
+    summary = summarise("trap", results, seconds=1.0)
+    assert summary.decided == 0 and summary.mean_decisive_ply == 0.0
+
+
+def test_game_length_is_averaged_over_every_game() -> None:
+    results = [
+        _result("trap", 0, moves=10, blunders=0, cp=0, outcome=1.0, plies=20),
+        _result("trap", 1, moves=10, blunders=0, cp=0, outcome=1.0, plies=60),
+    ]
+    assert summarise("trap", results, 1.0).mean_plies == pytest.approx(40.0)
+
+
+def test_the_error_metrics_were_not_removed() -> None:
+    """They are what exposed three failed interventions; they stay in the table."""
+    summary = summarise("trap", [_result("trap", 0, moves=10, blunders=2, cp=500, outcome=1.0)], 1.0)
+    assert summary.blunder_rate == pytest.approx(0.2)
+    assert summary.mean_cp_lost == pytest.approx(50.0)
+
