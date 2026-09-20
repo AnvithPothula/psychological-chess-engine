@@ -83,6 +83,11 @@ class GameResult:
     opponent_cp_lost: int
     plies: int
 
+    gambits: int = 0
+    """Moves played that the static floor would have vetoed. A log line cannot
+    carry this: workers run at WARNING, so anything logged inside the pool is
+    invisible to the caller."""
+
     decisive_ply: Optional[int] = None
     """Ply where the bot's objective evaluation last crossed ``DECISIVE_CP`` and
     stayed above it for the rest of the game. ``None`` when it never did.
@@ -116,6 +121,12 @@ class ArmSummary:
     mean_cp_lost: float
     opponent_moves: int
     seconds: float
+
+    gambits: int = 0
+    """Total gambit moves played across the arm."""
+
+    gambit_games: int = 0
+    """Games containing at least one."""
 
     mean_plies: float = 0.0
     """Shorter is more lethal, given the win rate is saturated either way."""
@@ -167,7 +178,7 @@ def play_game(
     bot_white = game % 2 == 0
     bot_colour = chess.WHITE if bot_white else chess.BLACK
     board = chess.Board()
-    blunders = moves = cp_lost = 0
+    blunders = moves = cp_lost = gambits = 0
     max_error = 0
     decisive_ply: Optional[int] = None
 
@@ -175,7 +186,13 @@ def play_game(
         if board.is_game_over():
             break
         if board.turn == bot_colour:
-            board.push(searcher.search(board, spec.search).move)
+            decision = searcher.search(board, spec.search)
+            chosen_stats = next(
+                (c for c in decision.candidates if c.move == decision.move), None
+            )
+            if chosen_stats is not None and chosen_stats.is_gambit:
+                gambits += 1
+            board.push(decision.move)
             # The judge already scores this position for the opponent, so the
             # bot's own standing comes free on the opponent's turn below.
             continue
@@ -212,7 +229,7 @@ def play_game(
         outcome=white_score if bot_white else 1.0 - white_score,
         adjudicated=adjudicated, opponent_moves=moves, opponent_blunders=blunders,
         opponent_cp_lost=cp_lost, plies=board.ply(),
-        decisive_ply=decisive_ply, max_opponent_error=max_error,
+        decisive_ply=decisive_ply, max_opponent_error=max_error, gambits=gambits,
     )
 
 
@@ -274,6 +291,8 @@ def summarise(arm: str, results: Sequence[GameResult], seconds: float) -> ArmSum
         ),
         opponent_moves=total_moves,
         seconds=seconds,
+        gambits=sum(r.gambits for r in results),
+        gambit_games=sum(1 for r in results if r.gambits),
         mean_plies=statistics.fmean(r.plies for r in results) if results else 0.0,
         decided=len(decisive),
         mean_decisive_ply=statistics.fmean(decisive) if decisive else 0.0,
@@ -343,12 +362,13 @@ def _report(summaries: Sequence[ArmSummary]) -> None:
     not worth less for having given an unwelcome answer.
     """
     print(f"\n{'arm':<10}{'games':>7}{'score':>8}{'plies':>8}{'decided':>9}"
-          f"{'dec.ply':>9}{'max err':>10}{'blunder rate':>16}{'cp lost':>9}{'min':>7}")
+          f"{'dec.ply':>9}{'max err':>10}{'gambits':>9}{'blunder rate':>16}{'cp lost':>9}{'min':>7}")
     for summary in summaries:
         print(
             f"{summary.arm:<10}{summary.games:>7}{summary.score:>8.3f}"
             f"{summary.mean_plies:>8.1f}{summary.decided:>9}"
             f"{summary.mean_decisive_ply:>9.1f}{summary.mean_max_error:>10.0f}"
+            f"{summary.gambits:>9}"
             f"{summary.blunder_rate:>12.4f} +/-{summary.blunder_rate_stderr:.4f}"
             f"{summary.mean_cp_lost:>9.0f}{summary.seconds / 60:>7.1f}"
         )
@@ -365,6 +385,8 @@ def _report(summaries: Sequence[ArmSummary]) -> None:
                  math.sqrt(2.0) * first.mean_decisive_ply / decided, True))
     print(_delta("max opponent error", first.mean_max_error, second.mean_max_error,
                  math.sqrt(first.max_error_stderr ** 2 + second.max_error_stderr ** 2), False))
+    scores = math.sqrt(2.0) * 0.5 / math.sqrt(max(1, first.games))
+    print(_delta("score", first.score, second.score, scores, False))
     print(_delta("blunder rate x100", first.blunder_rate * 100, second.blunder_rate * 100,
                  100 * math.sqrt(first.blunder_rate_stderr ** 2
                                  + second.blunder_rate_stderr ** 2), False))

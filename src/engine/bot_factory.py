@@ -27,8 +27,16 @@ logger = logging.getLogger(__name__)
 ARENA_SEARCH: Final[SearchConfig] = SearchConfig(
     root_depth=8, leaf_depth=8, max_candidates=5, max_replies=5
 )
-"""Shared by every arm. Both bots search identically; only the candidate source
-differs, which is the whole point of the comparison."""
+"""The control. Static safety floor, Stockfish candidates only."""
+
+GAMBIT_SEARCH: Final[SearchConfig] = SearchConfig(
+    root_depth=8, leaf_depth=8, max_candidates=5, max_replies=5,
+    max_proposals=5, proposal_count=5,
+    gambit_lambda=0.5, gambit_floor=400,
+)
+"""The treatment. Same depths, so the arms still differ in one idea: the
+candidate pool is the union of Stockfish's top five and the prior's top five,
+and the floor slides with expected utility down to a hard bottom of 400cp."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +45,7 @@ class BotSpec:
 
     name: str
     description: str
-    use_scorer: bool = False
-    scorer_path: Path = Path("models/trap_scorer.pth")
+    use_prior_candidates: bool = False
     prior_path: Path = field(default_factory=lambda: WARM_CHECKPOINT)
     search: SearchConfig = ARENA_SEARCH
 
@@ -50,8 +57,12 @@ BASELINE: Final[BotSpec] = BotSpec(
 
 TRAP: Final[BotSpec] = BotSpec(
     name="trap",
-    description="Same search, candidates re-ranked by the engine-annotated scorer.",
-    use_scorer=True,
+    description=(
+        "Same search, candidate pool widened by the distilled human prior and a "
+        "risk floor that slides with expected utility."
+    ),
+    use_prior_candidates=True,
+    search=GAMBIT_SEARCH,
 )
 
 ARMS: Final[dict[str, BotSpec]] = {BASELINE.name: BASELINE, TRAP.name: TRAP}
@@ -66,17 +77,15 @@ def build_searcher(
 ) -> AdversarialSearcher:
     """Assemble one arm's searcher. Raises if a required checkpoint is absent.
 
-    A missing scorer is fatal rather than a silent downgrade to the baseline:
-    an arena arm that quietly becomes its own control produces a null result
-    that looks like evidence.
+    A missing checkpoint is fatal rather than a silent downgrade to the
+    baseline: an arena arm that quietly becomes its own control produces a null
+    result that looks like evidence.
     """
     proposer: Optional[CandidateProposer] = None
-    if spec.use_scorer:
-        from src.engine.scorer_proposer import ScorerCandidateProposer
+    if spec.use_prior_candidates:
+        from src.engine.policy_generator import NeuralCandidateGenerator
 
-        proposer = ScorerCandidateProposer(
-            stockfish, prior_path=spec.prior_path, scorer_path=spec.scorer_path
-        )
+        proposer = NeuralCandidateGenerator(spec.prior_path)
     searcher = AdversarialSearcher(stockfish, opponent, proposer=proposer)
     searcher.opponent_rating = opponent_rating
     return searcher

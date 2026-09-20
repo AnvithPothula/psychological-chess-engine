@@ -25,7 +25,10 @@ import pytest
 from src.config import MATE_SCORE_CP
 from src.engine.cache import EvalCache, position_key
 from src.engine.maia import MaiaEvaluator
-from src.engine.search import AdversarialSearcher, blunder_potential, selection_score, TerminalPositionError, truncate_distribution
+from src.engine.search import (
+    AdversarialSearcher, blunder_potential, gambit_floor, selection_score,
+    TerminalPositionError, truncate_distribution,
+)
 from src.engine.stockfish import StockfishEvaluator
 from src.types import CandidateStats, EngineEval, MoveDistribution, SearchConfig, win_probability
 
@@ -463,3 +466,99 @@ def test_beta_only_moves_selection_when_it_is_weighted() -> None:
 
     on = SearchConfig(beta_weight=300.0)
     assert selection_score(sharp, on) > selection_score(quiet, on)
+
+
+# --- the gambit floor -------------------------------------------------------
+
+
+def test_the_floor_is_static_until_lambda_is_set() -> None:
+    """Off by default. Three previous interventions looked as reasonable."""
+    off = SearchConfig()
+    assert off.gambit_lambda == 0.0
+    floor, gambit = gambit_floor(utility=900.0, objective_score=-150, settings=off)
+    assert floor == off.safety_threshold and gambit is False
+
+
+def test_a_surplus_lowers_the_floor_in_proportion() -> None:
+    """The surplus is what expectimax expects to win from human error."""
+    settings = SearchConfig(safety_threshold=100, gambit_lambda=0.5, gambit_floor=400)
+    # objective -200, utility +200 -> surplus 400 -> floor 100 + 200 = 300
+    floor, gambit = gambit_floor(utility=200.0, objective_score=-200, settings=settings)
+    assert floor == 300 and gambit is True
+
+
+def test_the_hard_bottom_cannot_be_crossed_by_any_surplus() -> None:
+    """However large the payout, a lost position stays lost."""
+    settings = SearchConfig(safety_threshold=100, gambit_lambda=0.5, gambit_floor=400)
+    floor, gambit = gambit_floor(utility=100_000.0, objective_score=-50, settings=settings)
+    assert floor == 400, "clamped to gambit_floor"
+    assert gambit is True
+
+
+def test_a_move_with_no_surplus_gets_no_relief() -> None:
+    """Objectively bad and not expected to pay is simply bad."""
+    settings = SearchConfig(safety_threshold=100, gambit_lambda=0.5, gambit_floor=400)
+    floor, gambit = gambit_floor(utility=-400.0, objective_score=-200, settings=settings)
+    assert floor == 100 and gambit is False
+
+
+def test_a_hard_bottom_above_the_soft_floor_is_refused() -> None:
+    """gambit_floor is the looser of the two; inverting them would tighten."""
+    with pytest.raises(ValueError):
+        SearchConfig(safety_threshold=300, gambit_floor=100, gambit_lambda=0.5)
+    with pytest.raises(ValueError):
+        SearchConfig(gambit_lambda=-1.0)
+
+
+def test_a_gambit_is_a_move_the_static_floor_would_have_vetoed() -> None:
+    """End to end: the same candidate is unsafe statically and safe with lambda."""
+    board = chess.Board()
+    move = next(iter(board.legal_moves))
+    strict = SearchConfig(safety_threshold=100)
+    loose = SearchConfig(safety_threshold=100, gambit_lambda=0.5, gambit_floor=400)
+
+    def judge(settings: SearchConfig) -> CandidateStats:
+        return AdversarialSearcher._build_stats(
+            move, utility=300.0, worst=-250, objective_score=-250,
+            replies=(), settings=settings,
+        )
+
+    assert judge(strict).is_safe is False, "a 250cp sacrifice fails a 100cp floor"
+    relaxed = judge(loose)
+    assert relaxed.is_safe is True and relaxed.is_gambit is True
+    assert relaxed.floor_used == 375, "100 + 0.5 * (300 - -250) clamped by 400"
+
+
+def test_a_move_that_clears_the_static_floor_is_not_a_gambit() -> None:
+    """The flag must mean "the static floor would have vetoed this".
+
+    Tying it to "the floor moved" instead marks nearly every move: any positive
+    trap surplus slides the floor, and most moves have one. Measured at 375
+    flags across 20 games before this was tightened.
+    """
+    board = chess.Board()
+    move = next(iter(board.legal_moves))
+    loose = SearchConfig(safety_threshold=100, gambit_lambda=0.5, gambit_floor=400)
+
+    comfortable = AdversarialSearcher._build_stats(
+        move, utility=300.0, worst=50, objective_score=50, replies=(), settings=loose,
+    )
+    assert comfortable.is_safe is True
+    assert comfortable.is_gambit is False, "a move that was never at risk is not a gambit"
+
+    sacrificial = AdversarialSearcher._build_stats(
+        move, utility=300.0, worst=-250, objective_score=-250, replies=(), settings=loose,
+    )
+    assert sacrificial.is_safe is True and sacrificial.is_gambit is True
+
+
+def test_a_move_below_the_hard_bottom_is_never_a_gambit() -> None:
+    """Failing both floors is not a gambit, it is a blunder."""
+    board = chess.Board()
+    move = next(iter(board.legal_moves))
+    loose = SearchConfig(safety_threshold=100, gambit_lambda=0.5, gambit_floor=400)
+    lost = AdversarialSearcher._build_stats(
+        move, utility=200.0, worst=-900, objective_score=-900, replies=(), settings=loose,
+    )
+    assert lost.is_safe is False and lost.is_gambit is False
+

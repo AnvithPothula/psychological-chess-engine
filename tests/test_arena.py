@@ -94,28 +94,31 @@ def test_worker_count_is_bounded_and_respects_an_explicit_request() -> None:
     assert 1 <= automatic <= (32 if automatic else 1)
 
 
-def test_the_arms_differ_only_in_where_candidates_come_from() -> None:
-    """If the arms differ in depth too, the result measures the depth."""
-    assert BASELINE.search is TRAP.search is ARENA_SEARCH
-    assert BASELINE.use_scorer is False and TRAP.use_scorer is True
+def test_the_arms_differ_only_in_pool_and_floor() -> None:
+    """Same depths, so a difference cannot be a search-effort artefact."""
+    assert BASELINE.search.root_depth == TRAP.search.root_depth
+    assert BASELINE.search.leaf_depth == TRAP.search.leaf_depth
+    assert BASELINE.search.max_candidates == TRAP.search.max_candidates
+    assert BASELINE.search.max_replies == TRAP.search.max_replies
+
+    assert BASELINE.use_prior_candidates is False and TRAP.use_prior_candidates is True
+    assert BASELINE.search.gambit_lambda == 0.0, "the control keeps the static floor"
+    assert TRAP.search.gambit_lambda > 0.0 and TRAP.search.max_proposals > 0
     assert set(ARMS) == {"baseline", "trap"}
 
 
-def test_a_missing_scorer_is_fatal_rather_than_a_silent_downgrade() -> None:
+def test_a_missing_prior_is_fatal_rather_than_a_silent_downgrade() -> None:
     """An arm that quietly becomes the control produces a fake null result."""
-    from src.engine.policy_generator import PolicyUnavailableError
-    from src.engine.scorer_proposer import ScorerCandidateProposer
+    from src.engine.policy_generator import NeuralCandidateGenerator, PolicyUnavailableError
 
     with pytest.raises(PolicyUnavailableError):
-        ScorerCandidateProposer.__new__(ScorerCandidateProposer)._load_scorer(
-            Path("models/does-not-exist.pth"), __import__("torch").device("cpu")
-        )
+        NeuralCandidateGenerator(Path("models/does-not-exist.pth"))
 
 
-def test_a_spec_carries_its_own_checkpoints() -> None:
-    spec = BotSpec(name="custom", description="x", use_scorer=True,
-                   scorer_path=Path("a.pth"), prior_path=Path("b.pth"))
-    assert spec.scorer_path == Path("a.pth") and spec.prior_path == Path("b.pth")
+def test_a_spec_carries_its_own_checkpoint() -> None:
+    spec = BotSpec(name="custom", description="x", use_prior_candidates=True,
+                   prior_path=Path("b.pth"))
+    assert spec.prior_path == Path("b.pth")
 
 
 # --- lethality --------------------------------------------------------------

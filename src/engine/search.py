@@ -175,6 +175,34 @@ def blunder_potential(
     return BlunderScan((legal_count - sound) / legal_count, frozenset(blunders), legal_count)
 
 
+def gambit_floor(
+    utility: float, objective_score: int, settings: SearchConfig
+) -> Tuple[int, bool]:
+    """The floor this candidate is judged against, and whether it is a gambit.
+
+    A static floor vetoes every real gambit. A sacrifice is objectively worse by
+    construction -- that is what makes it a sacrifice -- and pays only through
+    the reply the opponent is predicted to choose. Judging it against its
+    objective score alone rejects it before the payout is considered.
+
+    The surplus is ``expected_utility - objective_score``: centipawns the move
+    is expected to win purely from human error, which is exactly what the
+    expectimax already computes. Scaling the floor by it lets a move risk more
+    when more is expected to come back, and ``gambit_floor`` is the hard bottom
+    at which a position is lost no matter what the opponent plays.
+
+    ``gambit_lambda`` defaults to zero, which reproduces the static floor
+    exactly. Three previous interventions here looked equally reasonable and
+    measured null, so this one ships off until an arena run says otherwise.
+    """
+    base = settings.safety_threshold
+    if settings.gambit_lambda <= 0.0:
+        return base, False
+    surplus = max(0.0, utility - objective_score)
+    relaxed = min(settings.gambit_floor, int(base + settings.gambit_lambda * surplus))
+    return relaxed, relaxed > base
+
+
 def selection_score(candidate: CandidateStats, settings: SearchConfig) -> float:
     """Ranking key: expectimax utility plus the danger terms, in centipawns.
 
@@ -302,12 +330,13 @@ class AdversarialSearcher:
             nodes += evaluated
             stats.append(candidate)
             logger.debug(
-                "candidate %s: utility=%+.1f worst=%+d trap_delta=%+.1f safe=%s replies=%s",
+                "candidate %s: utility=%+.1f worst=%+d trap_delta=%+.1f safe=%s%s replies=%s",
                 move.uci(),
                 candidate.expected_utility,
                 candidate.worst_case,
                 candidate.blunder_trap_delta,
                 candidate.is_safe,
+                f" GAMBIT(floor -{candidate.floor_used})" if candidate.is_gambit else "",
                 [f"{r.move.uci()}@{r.probability:.0%}->{r.evaluation:+d}" for r in candidate.top_replies],
             )
 
@@ -316,6 +345,15 @@ class AdversarialSearcher:
 
         if safe:
             chosen = safe[0]
+            if chosen.is_gambit:
+                # Worth INFO, not DEBUG: this is a move the static floor would
+                # have vetoed, played because the expectimax expects the
+                # opponent to hand the material back.
+                logger.info(
+                    "GAMBIT %s: objective %+dcp, utility %+.1fcp, floor relaxed to -%d",
+                    chosen.move.uci(), chosen.objective_score,
+                    chosen.expected_utility, chosen.floor_used,
+                )
             fallback_triggered = False
             utility = chosen.expected_utility
             selected = chosen.move
@@ -466,6 +504,10 @@ class AdversarialSearcher:
             logger.warning("policy: proposal failed (%s), using the Stockfish scan alone", exc)
             return candidates
 
+        # A union rather than a top-up. The Stockfish scan ranks by objective
+        # score and will not surface a move it considers dubious, which is the
+        # entire class a gambit lives in; the distilled prior ranks by what a
+        # human would play. Neither list alone contains both.
         legal = set(board.legal_moves)
         added = [
             move for move in proposed
@@ -564,15 +606,27 @@ class AdversarialSearcher:
         beta: float = 0.0,
         blunder_mass: float = 0.0,
     ) -> CandidateStats:
+        floor, _relaxed = gambit_floor(utility, objective_score, settings)
+        # Both halves are still required. The reply floor alone can be blinded
+        # by truncation dropping the low-probability refutation, and the
+        # objective floor alone ignores what the opponent is likely to do.
+        exposure = min(worst, objective_score)
+        clears = exposure >= -floor
+        # A gambit is not "the floor moved" -- with any positive trap surplus it
+        # moves on nearly every move. It is specifically a move the static floor
+        # would have rejected and the sliding one accepts.
+        is_gambit = clears and exposure < -settings.safety_threshold
         return CandidateStats(
             move=move,
             expected_utility=utility,
             worst_case=worst,
             objective_score=objective_score,
             blunder_trap_delta=utility - objective_score,
+            is_gambit=is_gambit,
+            floor_used=floor,
             beta=beta,
             blunder_mass=blunder_mass,
-            is_safe=min(worst, objective_score) >= -settings.safety_threshold,
+            is_safe=clears,
             top_replies=replies,
         )
 

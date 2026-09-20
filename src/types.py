@@ -184,6 +184,23 @@ class SearchConfig:
     max_proposals: int = 3
     cache_size: int = 100_000
 
+    gambit_lambda: float = 0.0
+    """How far a large expected-utility surplus may lower the safety floor.
+
+    The floor exists because a search that maximises expected utility under an
+    opponent model will otherwise hang material on the chance the opponent errs.
+    A *static* floor also vetoes every real gambit, which is the one class of
+    move this engine exists to play: a sacrifice is by construction objectively
+    worse and only pays through the opponent's reply.
+
+    So the floor slides with the payout. At zero this reproduces the static
+    floor exactly, which is the default until a measurement says otherwise --
+    three previous interventions looked plausible and measured null."""
+
+    gambit_floor: int = 400
+    """Absolute worst objective score playable however large the surplus. Below
+    this the position is lost regardless of what the opponent does next."""
+
     blunder_threshold: int = 200
     """Centipawn loss against best play that makes a reply a *blunder*, in the
     Anderson-Kleinberg sense. 200cp is a clear piece-or-more error."""
@@ -243,6 +260,13 @@ class SearchConfig:
             raise ValueError("proposal_count must be >= 1 and max_proposals >= 0")
         if self.cache_size < 1:
             raise ValueError("cache_size must be >= 1")
+        if self.gambit_lambda < 0.0:
+            raise ValueError("gambit_lambda must be non-negative")
+        if self.gambit_floor < self.safety_threshold:
+            raise ValueError(
+                f"gambit_floor {self.gambit_floor} is tighter than safety_threshold "
+                f"{self.safety_threshold}; the hard bottom cannot be above the soft one"
+            )
         if self.blunder_threshold < 0:
             raise ValueError("blunder_threshold must be non-negative")
         if self.beta_depth < 1:
@@ -282,6 +306,14 @@ class CandidateStats:
     blunder_trap_delta: float
     """``expected_utility - objective_score``: centipawns the move is expected to
     win purely from human error. Large and positive means a genuine trap."""
+
+    is_gambit: bool = False
+    """True when this move clears the floor only because its expected utility
+    lowered it -- a sacrifice the static threshold would have vetoed."""
+
+    floor_used: int = 0
+    """The floor this candidate was actually judged against, negated. Equal to
+    ``safety_threshold`` unless a surplus moved it."""
 
     beta: float = 0.0
     """Blunder potential of the position this move creates: the fraction of the
