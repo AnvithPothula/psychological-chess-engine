@@ -34,7 +34,8 @@ from typing import Final, List, Optional, Sequence, Tuple
 import chess
 
 from src.engine.bot_factory import ARMS, BotSpec, build_searcher, engines
-from src.engine.search import _rank_mover_relative, _split_at_threshold
+from src.engine.maia3_model import Maia3Evaluator
+from src.engine.search import AdversarialSearcher, _rank_mover_relative, _split_at_threshold
 from src.engine.stockfish import StockfishEvaluator
 
 __all__ = ["GameResult", "ArmSummary", "play_game", "run_arm", "main"]
@@ -162,18 +163,20 @@ def _judge(
 
 def play_game(
     spec: BotSpec,
+    searcher: AdversarialSearcher,
     stockfish: StockfishEvaluator,
-    opponent: object,
+    opponent: Maia3Evaluator,
     *,
     game: int,
-    rating: int,
     plies: int,
 ) -> GameResult:
-    """One game, bot against the human model, with the opponent's errors scored."""
-    from src.engine.maia3_model import Maia3Evaluator
+    """One game, bot against the human model, with the opponent's errors scored.
 
-    assert isinstance(opponent, Maia3Evaluator)
-    searcher = build_searcher(spec, stockfish, opponent, opponent_rating=rating)
+    The searcher is passed in rather than built here. Building it per game
+    reloaded a torch checkpoint and re-opened a book on every one of a thousand
+    games, which is most of why the proposer arm ran 60% slower than its
+    control.
+    """
     rng = random.Random(game)
     bot_white = game % 2 == 0
     bot_colour = chess.WHITE if bot_white else chess.BLACK
@@ -245,10 +248,15 @@ def _play_batch(
     spec = ARMS[arm]
     results: List[GameResult] = []
     for stockfish, opponent in engines(rating):
-        for game in games:
-            results.append(
-                play_game(spec, stockfish, opponent, game=game, rating=rating, plies=plies)
-            )
+        searcher = build_searcher(spec, stockfish, opponent, opponent_rating=rating)
+        try:
+            for game in games:
+                results.append(
+                    play_game(spec, searcher, stockfish, opponent, game=game, plies=plies)
+                )
+        finally:
+            if searcher.book is not None:
+                searcher.book.close()
     return results
 
 

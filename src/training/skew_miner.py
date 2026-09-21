@@ -100,8 +100,21 @@ BRANCHES_PER_NODE: Final[int] = 4
 and rarely has the game count to clear ``min_games`` anyway."""
 
 REQUEST_INTERVAL: Final[float] = 1.1
-"""Seconds between calls. The endpoint is generous but not free, and a miner
-that gets itself rate-limited finishes slower than one that waits."""
+"""Starting seconds between calls, not a fixed one.
+
+Measured: at 1.1s the endpoint returned 36 rate limits against 7 useful results
+in two and a half minutes. A fixed interval cannot find the right value because
+the limit is not published and varies; the client widens its own interval on
+every 429 and narrows it again after a run of clean calls."""
+
+INTERVAL_CEILING: Final[float] = 12.0
+INTERVAL_GROWTH: Final[float] = 1.6
+"""Multiplier applied to the interval on each rate limit."""
+
+INTERVAL_DECAY: Final[float] = 0.93
+CALLS_BEFORE_DECAY: Final[int] = 20
+"""Clean calls required before the interval is allowed to narrow again. Decaying
+immediately would oscillate straight back into the limit."""
 
 MAX_BACKOFF: Final[float] = 120.0
 
@@ -144,6 +157,9 @@ class ExplorerClient:
         self.speeds = speeds
         self.ratings = ratings
         self._last_call = 0.0
+        self._interval = REQUEST_INTERVAL
+        self._clean_calls = 0
+        self.rate_limits = 0
 
     def close(self) -> None:
         self.session.close()
@@ -157,8 +173,8 @@ class ExplorerClient:
     def lookup(self, board: chess.Board) -> Optional[Dict[str, Any]]:
         """Explorer statistics for one position, or ``None`` if unavailable."""
         elapsed = time.monotonic() - self._last_call
-        if elapsed < REQUEST_INTERVAL:
-            time.sleep(REQUEST_INTERVAL - elapsed)
+        if elapsed < self._interval:
+            time.sleep(self._interval - elapsed)
 
         backoff = 2.0
         for attempt in range(6):
@@ -181,6 +197,10 @@ class ExplorerClient:
                 continue
 
             if response.status_code == 200:
+                self._clean_calls += 1
+                if self._clean_calls >= CALLS_BEFORE_DECAY:
+                    self._clean_calls = 0
+                    self._interval = max(REQUEST_INTERVAL, self._interval * INTERVAL_DECAY)
                 payload: Dict[str, Any] = response.json()
                 return payload
             if response.status_code == 401:
@@ -189,8 +209,14 @@ class ExplorerClient:
                     "export LICHESS_API_TOKEN before mining."
                 )
             if response.status_code in (429, 503):
+                self.rate_limits += 1
+                self._clean_calls = 0
+                self._interval = min(INTERVAL_CEILING, self._interval * INTERVAL_GROWTH)
                 wait = float(response.headers.get("Retry-After", backoff))
-                logger.info("explorer: %d, waiting %.0fs", response.status_code, wait)
+                logger.info(
+                    "explorer: %d, waiting %.0fs, interval now %.1fs",
+                    response.status_code, wait, self._interval,
+                )
                 time.sleep(min(MAX_BACKOFF, wait))
                 backoff *= 2
                 continue
@@ -342,7 +368,10 @@ def mine(
                 score, skew, f"{total:,}", evaluation, found[-1].average_rating,
             )
 
-    logger.info("mine: %d skewed moves from %d positions", len(found), visited)
+    logger.info(
+        "mine: %d skewed moves from %d positions (%d rate limits, interval %.1fs)",
+        len(found), visited, client.rate_limits, client._interval,
+    )
     return found
 
 

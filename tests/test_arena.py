@@ -13,7 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.bot_factory import ARENA_SEARCH, ARMS, BASELINE, TRAP, BotSpec
+from src.engine.bot_factory import (
+    ARENA_SEARCH, ARMS, BASELINE, SKEW, STANDARD, TRAP, BotSpec,
+)
 from src.eval.arena import (
     DECISIVE_CP, ERROR_CAP, GameResult, _chunks, safe_workers, summarise,
 )
@@ -104,7 +106,7 @@ def test_the_arms_differ_only_in_pool_and_floor() -> None:
     assert BASELINE.use_prior_candidates is False and TRAP.use_prior_candidates is True
     assert BASELINE.search.gambit_lambda == 0.0, "the control keeps the static floor"
     assert TRAP.search.gambit_lambda > 0.0 and TRAP.search.max_proposals > 0
-    assert set(ARMS) == {"baseline", "trap"}
+    assert set(ARMS) == {"baseline", "trap", "standard", "skew"}
 
 
 def test_a_missing_prior_is_fatal_rather_than_a_silent_downgrade() -> None:
@@ -181,4 +183,28 @@ def test_the_error_metrics_were_not_removed() -> None:
     summary = summarise("trap", [_result("trap", 0, moves=10, blunders=2, cp=500, outcome=1.0)], 1.0)
     assert summary.blunder_rate == pytest.approx(0.2)
     assert summary.mean_cp_lost == pytest.approx(50.0)
+
+
+def test_the_book_arms_differ_only_in_which_book_they_open() -> None:
+    """Same search, same candidate source; only the opening repertoire moves."""
+    assert STANDARD.search is SKEW.search
+    assert STANDARD.use_prior_candidates == SKEW.use_prior_candidates is False
+    assert STANDARD.book is SKEW.book is True
+    assert STANDARD.standard_path is None, "the control keeps the configured default"
+    assert SKEW.standard_path is not None and SKEW.standard_path.name == "skew.bin"
+
+
+def test_the_non_book_arms_really_open_no_book() -> None:
+    """Worth asserting: every arena result before Milestone 16 was bookless."""
+    assert BASELINE.book is False and TRAP.book is False
+
+
+def test_a_missing_skew_book_is_fatal_rather_than_a_silent_fallback() -> None:
+    """Falling back to the standard book would make the arm its own control."""
+    from src.engine.bot_factory import build_searcher
+
+    spec = BotSpec(name="ghost", description="x", book=True,
+                   standard_path=Path("src/engine/books/does-not-exist.bin"))
+    with pytest.raises(FileNotFoundError):
+        build_searcher(spec, None, None, opponent_rating=1500)  # type: ignore[arg-type]
 

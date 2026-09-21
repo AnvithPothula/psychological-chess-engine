@@ -14,15 +14,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Iterator, Optional
 
+from src.engine.book import OpeningBook
 from src.engine.maia3_model import Maia3Evaluator
 from src.engine.search import AdversarialSearcher, CandidateProposer
 from src.engine.stockfish import StockfishEvaluator
 from src.training.train_dpo import WARM_CHECKPOINT
 from src.types import SearchConfig
 
-__all__ = ["BotSpec", "BASELINE", "TRAP", "ARMS", "build_searcher"]
+__all__ = [
+    "BotSpec", "BASELINE", "TRAP", "STANDARD", "SKEW", "ARMS", "build_searcher",
+]
 
 logger = logging.getLogger(__name__)
+
+SKEW_BOOK: Final[Path] = Path("src/engine/books/skew.bin")
+"""Mined by src.training.skew_miner and packed by src.training.polyglot_compiler."""
 
 ARENA_SEARCH: Final[SearchConfig] = SearchConfig(
     root_depth=8, leaf_depth=8, max_candidates=5, max_replies=5
@@ -49,10 +55,36 @@ class BotSpec:
     prior_path: Path = field(default_factory=lambda: WARM_CHECKPOINT)
     search: SearchConfig = ARENA_SEARCH
 
+    book: bool = False
+    """Open an opening book at all. The arena ran without one until Milestone 16,
+    which is worth knowing when reading its earlier results: every game was
+    played out of the search from move one."""
+
+    standard_path: Optional[Path] = None
+    """Overrides the standard book. ``None`` keeps the configured default."""
+
+    trap_path: Optional[Path] = None
+
 
 BASELINE: Final[BotSpec] = BotSpec(
     name="baseline",
     description="Stockfish MultiPV candidates, adversarial expectimax, no re-ranking.",
+)
+
+STANDARD: Final[BotSpec] = BotSpec(
+    name="standard",
+    description="Opens from the standard book, then adversarial expectimax.",
+    book=True,
+)
+
+SKEW: Final[BotSpec] = BotSpec(
+    name="skew",
+    description=(
+        "Opens from the mined engine-equal skew book, then the same expectimax. "
+        "Differs from the standard arm in which openings it steers into, nothing else."
+    ),
+    book=True,
+    standard_path=SKEW_BOOK,
 )
 
 TRAP: Final[BotSpec] = BotSpec(
@@ -65,7 +97,9 @@ TRAP: Final[BotSpec] = BotSpec(
     search=GAMBIT_SEARCH,
 )
 
-ARMS: Final[dict[str, BotSpec]] = {BASELINE.name: BASELINE, TRAP.name: TRAP}
+ARMS: Final[dict[str, BotSpec]] = {
+    arm.name: arm for arm in (BASELINE, TRAP, STANDARD, SKEW)
+}
 
 
 def build_searcher(
@@ -86,7 +120,21 @@ def build_searcher(
         from src.engine.policy_generator import NeuralCandidateGenerator
 
         proposer = NeuralCandidateGenerator(spec.prior_path)
-    searcher = AdversarialSearcher(stockfish, opponent, proposer=proposer)
+
+    book: Optional[OpeningBook] = None
+    if spec.book:
+        if spec.standard_path is not None and not spec.standard_path.exists():
+            raise FileNotFoundError(
+                f"{spec.standard_path} does not exist; run src.training.skew_miner "
+                "and src.training.polyglot_compiler first"
+            )
+        book = OpeningBook(
+            trap_path=spec.trap_path,
+            standard_path=spec.standard_path,
+            opponent_rating=opponent_rating,
+        )
+
+    searcher = AdversarialSearcher(stockfish, opponent, config=spec.search, book=book)
     searcher.opponent_rating = opponent_rating
     return searcher
 
