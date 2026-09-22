@@ -186,7 +186,13 @@ def play_game(
     decisive_ply: Optional[int] = None
 
     for _ in range(plies):
-        if board.is_game_over():
+        # claim_draw matches the searcher, which treats a claimable threefold or
+        # fifty-move draw as terminal on the grounds that whichever side it
+        # suits will claim it. Without the flag the loop keeps playing a
+        # position the searcher refuses to search, and the game dies on a
+        # TerminalPositionError that only shows up once a book makes repetition
+        # likely.
+        if board.is_game_over(claim_draw=True):
             break
         if board.turn == bot_colour:
             decision = searcher.search(board, spec.search)
@@ -219,12 +225,12 @@ def play_game(
         max_error = max(max_error, error)
         board.push(played)
 
-    adjudicated = not board.is_game_over()
+    adjudicated = not board.is_game_over(claim_draw=True)
     if adjudicated:
         evaluation = stockfish.evaluate(board, depth=12)
         white_score = evaluation.win_probability
     else:
-        result = board.result()
+        result = board.result(claim_draw=True)
         white_score = 1.0 if result == "1-0" else 0.0 if result == "0-1" else 0.5
 
     return GameResult(
