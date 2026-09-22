@@ -8,6 +8,7 @@ that looks fine and contains the wrong moves.
 
 from __future__ import annotations
 
+import json
 import struct
 from pathlib import Path
 
@@ -161,3 +162,50 @@ def test_a_skew_entry_records_the_confound_it_cannot_remove() -> None:
     )
     assert entry.average_rating > 0
     assert entry.games > 0 and -100 < entry.evaluation_cp < 100
+
+
+def test_a_mine_killed_mid_run_keeps_what_it_already_found(tmp_path: Path) -> None:
+    """The miner streams to disk; it does not buffer and write once at the end.
+
+    This is a regression test with a receipt. The first version accumulated in
+    memory and wrote after the walk returned, so the three-hour wall-clock limit
+    that stopped the run also erased it: 722 finds, an empty output file, and log
+    lines that recorded the move but not the FEN, so nothing could be rebuilt.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from src.training import skew_miner
+
+    moves = [
+        {"uci": uci, "white": 7_000, "draws": 1_000, "black": 2_000, "averageRating": 1500}
+        for uci in ("e2e4", "d2d4", "g1f3")
+    ]
+    opening = {"white": 5_200, "draws": 1_000, "black": 3_800, "moves": moves}
+
+    calls = {"n": 0}
+
+    def lookup(board: chess.Board) -> object:
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise KeyboardInterrupt("wall-clock limit")
+        return opening
+
+    client = SimpleNamespace(lookup=lookup, rate_limits=0, _interval=1.0)
+    evaluator = Mock()
+    evaluator.evaluate.return_value = SimpleNamespace(centipawns=4)
+
+    destination = tmp_path / "skew_positions.jsonl"
+    with pytest.raises(KeyboardInterrupt):
+        skew_miner.mine(
+            client,  # type: ignore[arg-type]
+            evaluator,
+            destination,
+            max_ply=20, min_games=1_000, min_skew=0.01,
+        )
+
+    assert destination.exists(), "the run died and took every find with it"
+    records = [json.loads(line) for line in destination.read_text().splitlines() if line.strip()]
+    assert records, "the file exists but is empty, which is the same data loss"
+    assert all(record["fen"] for record in records), "a record without a FEN cannot be compiled"
+    assert compile_book(records, tmp_path / "skew.bin") > 0

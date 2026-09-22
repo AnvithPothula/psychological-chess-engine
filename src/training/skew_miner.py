@@ -284,6 +284,7 @@ def _evaluate(
 def mine(
     client: ExplorerClient,
     evaluator: StockfishEvaluator,
+    destination: Path,
     *,
     max_ply: int,
     min_games: int,
@@ -297,8 +298,17 @@ def mine(
     The frontier only extends through moves that are themselves popular and
     engine-equal. Following a line the engine already considers lost would find
     plenty of "skew" that is simply one side being better.
+
+    **Every find is written and flushed as it is found.** An earlier version
+    accumulated in memory and wrote once at the end, which meant the wall-clock
+    limit that stops a run also destroyed it: a three-hour mine produced 722
+    finds and an empty file, and the log line carried no FEN to rebuild them
+    from. A scraper that can be interrupted has to checkpoint, and this one can
+    always be interrupted.
     """
     baselines = dict(zip((chess.WHITE, chess.BLACK), baseline(client)))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    sink = destination.open("w", encoding="utf-8")
     found: List[SkewEntry] = []
     seen: set[str] = set()
     frontier: Deque[chess.Board] = deque([chess.Board()])
@@ -362,12 +372,14 @@ def mine(
                     evaluation_cp=evaluation,
                 )
             )
+            sink.write(json.dumps(asdict(found[-1])) + "\n")
+            sink.flush()
             logger.info(
                 "skew: ply %2d %-6s %s  score %.3f (%+.3f) over %s games, eval %+dcp, avg %d",
                 board.ply(), board.san(move), found[-1].bot_color,
                 score, skew, f"{total:,}", evaluation, found[-1].average_rating,
             )
-
+    sink.close()
     logger.info(
         "mine: %d skewed moves from %d positions (%d rate limits, interval %.1fs)",
         len(found), visited, client.rate_limits, client._interval,
@@ -376,6 +388,13 @@ def mine(
 
 
 def write_jsonl(entries: Sequence[SkewEntry], destination: Path) -> int:
+    """Rewrite the streamed file in skew order.
+
+    ``mine`` has already written every entry as it found it, so this only sorts.
+    A run killed by its wall-clock limit skips this and leaves the file in
+    discovery order, which ``compile_book`` reads just as happily -- it keys
+    entries by Zobrist hash and sorts them itself.
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as handle:
         for entry in sorted(entries, key=lambda item: -item.skew):
@@ -417,7 +436,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         StockfishEvaluator() as evaluator,
     ):
         entries = mine(
-            client, evaluator,
+            client, evaluator, args.output,
             max_ply=args.max_ply, min_games=args.min_games, min_skew=args.min_skew,
             max_eval=args.max_eval, depth=args.depth, max_positions=args.max_positions,
         )
