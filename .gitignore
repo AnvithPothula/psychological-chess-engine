@@ -29,5 +29,5 @@ build/games/
 
 # Maia-2 checkpoint cache (273MB, auto-downloaded)
 maia2_models/
-build/skew_report.txt
+build/skew_report*.txt
 build/skew_pipeline.done

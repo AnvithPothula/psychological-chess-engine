@@ -37,6 +37,7 @@ from src.engine.bot_factory import ARMS, BotSpec, build_searcher, engines
 from src.engine.maia3_model import Maia3Evaluator
 from src.engine.search import AdversarialSearcher, _rank_mover_relative, _split_at_threshold
 from src.engine.stockfish import StockfishEvaluator
+from src.types import MoveSource
 
 __all__ = ["GameResult", "ArmSummary", "play_game", "run_arm", "main"]
 
@@ -89,6 +90,15 @@ class GameResult:
     carry this: workers run at WARNING, so anything logged inside the pool is
     invisible to the caller."""
 
+    first_move: str = ""
+    """The bot's first move, UCI. From a shared start position, comparing it across
+    arms is how often the treatment changed anything at all."""
+
+    front_book_moves: int = 0
+    """Bot moves taken from the front book slot (``MoveSource.BOOK_TRAP``), which
+    is where an arm's distinguishing book sits. Milestone 16 ran 2,000 games
+    without this and could not tell that the treatment book almost never fired."""
+
     decisive_ply: Optional[int] = None
     """Ply where the bot's objective evaluation last crossed ``DECISIVE_CP`` and
     stayed above it for the rest of the game. ``None`` when it never did.
@@ -128,6 +138,10 @@ class ArmSummary:
 
     gambit_games: int = 0
     """Games containing at least one."""
+
+    front_book_moves: int = 0
+    front_book_games: int = 0
+    """Games in which the front book played at least once."""
 
     mean_plies: float = 0.0
     """Shorter is more lethal, given the win rate is saturated either way."""
@@ -169,6 +183,7 @@ def play_game(
     *,
     game: int,
     plies: int,
+    openings: Sequence[str] = (),
 ) -> GameResult:
     """One game, bot against the human model, with the opponent's errors scored.
 
@@ -178,10 +193,17 @@ def play_game(
     control.
     """
     rng = random.Random(game)
-    bot_white = game % 2 == 0
-    bot_colour = chess.WHITE if bot_white else chess.BLACK
-    board = chess.Board()
-    blunders = moves = cp_lost = gambits = 0
+    if openings:
+        # A mined position is recorded with the bot to move, so the side to move
+        # is the bot's colour; game i plays the same position in every arm.
+        board = chess.Board(openings[game % len(openings)])
+        bot_colour = board.turn
+    else:
+        board = chess.Board()
+        bot_colour = chess.WHITE if game % 2 == 0 else chess.BLACK
+    bot_white = bot_colour == chess.WHITE
+    first_move = ""
+    blunders = moves = cp_lost = gambits = front_book = 0
     max_error = 0
     decisive_ply: Optional[int] = None
 
@@ -201,6 +223,8 @@ def play_game(
             )
             if chosen_stats is not None and chosen_stats.is_gambit:
                 gambits += 1
+            front_book += decision.source is MoveSource.BOOK_TRAP
+            first_move = first_move or decision.move.uci()
             board.push(decision.move)
             # The judge already scores this position for the opponent, so the
             # bot's own standing comes free on the opponent's turn below.
@@ -239,11 +263,12 @@ def play_game(
         adjudicated=adjudicated, opponent_moves=moves, opponent_blunders=blunders,
         opponent_cp_lost=cp_lost, plies=board.ply(),
         decisive_ply=decisive_ply, max_opponent_error=max_error, gambits=gambits,
+        front_book_moves=front_book, first_move=first_move,
     )
 
 
 def _play_batch(
-    arm: str, games: Sequence[int], rating: int, plies: int
+    arm: str, games: Sequence[int], rating: int, plies: int, openings: Sequence[str] = ()
 ) -> List[GameResult]:
     """Worker entry point. Owns its own engines for the whole batch.
 
@@ -258,7 +283,8 @@ def _play_batch(
         try:
             for game in games:
                 results.append(
-                    play_game(spec, searcher, stockfish, opponent, game=game, plies=plies)
+                    play_game(spec, searcher, stockfish, opponent, game=game, plies=plies,
+                              openings=openings)
                 )
         finally:
             if searcher.book is not None:
@@ -307,6 +333,8 @@ def summarise(arm: str, results: Sequence[GameResult], seconds: float) -> ArmSum
         seconds=seconds,
         gambits=sum(r.gambits for r in results),
         gambit_games=sum(1 for r in results if r.gambits),
+        front_book_moves=sum(r.front_book_moves for r in results),
+        front_book_games=sum(1 for r in results if r.front_book_moves),
         mean_plies=statistics.fmean(r.plies for r in results) if results else 0.0,
         decided=len(decisive),
         mean_decisive_ply=statistics.fmean(decisive) if decisive else 0.0,
@@ -318,7 +346,8 @@ def summarise(arm: str, results: Sequence[GameResult], seconds: float) -> ArmSum
 
 
 def run_arm(
-    arm: str, *, games: int, rating: int, plies: int, workers: int
+    arm: str, *, games: int, rating: int, plies: int, workers: int,
+    openings: Sequence[str] = (),
 ) -> Tuple[ArmSummary, List[GameResult]]:
     """Play one arm's games across a process pool."""
     started = time.perf_counter()
@@ -326,7 +355,7 @@ def run_arm(
     results: List[GameResult] = []
     with futures.ProcessPoolExecutor(max_workers=len(batches)) as pool:
         pending = [
-            pool.submit(_play_batch, arm, batch, rating, plies) for batch in batches
+            pool.submit(_play_batch, arm, batch, rating, plies, openings) for batch in batches
         ]
         for done in futures.as_completed(pending):
             results.extend(done.result())
@@ -386,6 +415,9 @@ def _report(summaries: Sequence[ArmSummary]) -> None:
             f"{summary.blunder_rate:>12.4f} +/-{summary.blunder_rate_stderr:.4f}"
             f"{summary.mean_cp_lost:>9.0f}{summary.seconds / 60:>7.1f}"
         )
+    for summary in summaries:
+        print(f"  {summary.arm}: front book played {summary.front_book_moves} moves "
+              f"in {summary.front_book_games}/{summary.games} games")
     if len(summaries) != 2:
         return
 
@@ -419,12 +451,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--workers", type=int, default=None,
                         help="Default: bounded by memory, not core count.")
     parser.add_argument("--output", type=Path, default=Path("build/arena.jsonl"))
+    parser.add_argument("--openings", type=Path, default=None,
+                        help="JSONL with a 'fen' per line, bot to move. Game i starts from "
+                             "the i-th distinct position in every arm, so the arms are paired.")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING"))
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(message)s",
                         datefmt="%H:%M:%S")
     workers = safe_workers(args.workers)
+    openings: List[str] = []
+    if args.openings is not None:
+        rows = (json.loads(line) for line in args.openings.read_text().splitlines() if line.strip())
+        openings = list(dict.fromkeys(str(row["fen"]) for row in rows))
+        logger.info("arena: %d distinct start positions from %s", len(openings), args.openings)
     logger.info(
         "arena: %d games per arm vs maia3@%d, %d plies, %d workers",
         args.games, args.rating, args.plies, workers,
@@ -435,7 +475,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     with args.output.open("w", encoding="utf-8") as handle:
         for arm in args.arms:
             summary, results = run_arm(
-                arm, games=args.games, rating=args.rating, plies=args.plies, workers=workers
+                arm, games=args.games, rating=args.rating, plies=args.plies, workers=workers,
+                openings=openings,
             )
             summaries.append(summary)
             for result in results:

@@ -209,3 +209,20 @@ def test_a_mine_killed_mid_run_keeps_what_it_already_found(tmp_path: Path) -> No
     assert records, "the file exists but is empty, which is the same data loss"
     assert all(record["fen"] for record in records), "a record without a FEN cannot be compiled"
     assert compile_book(records, tmp_path / "skew.bin") > 0
+
+
+def test_the_token_falls_back_to_dotenv_and_the_environment_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv(config.LICHESS_TOKEN_ENV_VAR, raising=False)
+    (tmp_path / ".env").write_text(f'# comment\nexport {config.LICHESS_TOKEN_ENV_VAR}="from-file"\n')
+    assert config.lichess_token() == "from-file"
+
+    monkeypatch.setenv(config.LICHESS_TOKEN_ENV_VAR, "from-env")
+    assert config.lichess_token() == "from-env"
+
+    monkeypatch.delenv(config.LICHESS_TOKEN_ENV_VAR)
+    (tmp_path / ".env").unlink()
+    with pytest.raises(RuntimeError):
+        config.lichess_token()

@@ -102,17 +102,37 @@ def standard_book_path() -> Path:
     return Path(os.environ.get(STANDARD_BOOK_ENV_VAR, BOOKS_DIR / "standard.bin")).expanduser()
 
 
+def _dotenv_value(key: str) -> str:
+    """``key`` from the project's ``.env``, or empty.
+
+    Read on demand rather than loaded into ``os.environ``, so the token never
+    reaches child processes that do not ask for it. A background job launched
+    without sourcing ``.env`` failed on this once; the environment still wins.
+    """
+    try:
+        lines = (PROJECT_ROOT / ".env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        name, sep, value = line.strip().removeprefix("export ").partition("=")
+        if sep and name.strip() == key:
+            return value.strip().strip("'\"")
+    return ""
+
+
 def lichess_token() -> str:
     """The Lichess bot API token from the environment.
 
     Never accepted as a command-line argument: tokens on an argv line leak into
     shell history and process listings.
     """
-    token = os.environ.get(LICHESS_TOKEN_ENV_VAR, "").strip()
+    token = os.environ.get(LICHESS_TOKEN_ENV_VAR, "").strip() or _dotenv_value(
+        LICHESS_TOKEN_ENV_VAR
+    )
     if not token:
         raise RuntimeError(
             f"{LICHESS_TOKEN_ENV_VAR} is unset. Create a token with the 'bot:play' scope at "
-            "https://lichess.org/account/oauth/token and export it before starting the bridge."
+            "https://lichess.org/account/oauth/token and export it or put it in .env."
         )
     return token
 

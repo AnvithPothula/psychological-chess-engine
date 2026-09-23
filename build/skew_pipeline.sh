@@ -51,8 +51,26 @@ $PY -m src.training.polyglot_compiler --input build/skew_positions.jsonl \
 
 # 4. powered arena
 say ""
-say "=== ARENA: standard vs skew, 1000 games/arm ==="
-$PY -m src.eval.arena --arms standard skew --games 1000 --rating 1500 --plies 60 \
+# Paired: every game starts at a mined position with the bot to move, the same
+# position in both arms, two passes with different Maia seeds. Opening from the
+# initial position the skew book fired in 2/40 games, because nothing steers the
+# bot into plies 7-10 of the mined lines. caffeinate because the mine ran 17h on
+# a 3h timeout: the Mac slept and suspended it.
+say "=== ARENA: standard vs skew, paired from mined positions ==="
+N=$(( 2 * $($PY -c 'import json;print(len({json.loads(l)["fen"] for l in open("build/skew_positions.jsonl")}))') ))
+caffeinate -i $PY -m src.eval.arena --arms standard skew --games "$N" --rating 1500 --plies 60 \
+    --openings build/skew_positions.jsonl \
     --output build/arena_skew.jsonl 2>&1 | grep -vE "^loading|^Maia3 ready|^resolving|Warning:" | tee -a "$REPORT"
+$PY - <<'EOF' 2>&1 | tee -a "$REPORT"
+import json
+rows=[json.loads(l) for l in open("build/arena_skew.jsonl")]
+a={r["game"]:r for r in rows if r["arm"]=="standard"}; b={r["game"]:r for r in rows if r["arm"]=="skew"}
+changed=[g for g in a if a[g]["first_move"]!=b[g]["first_move"]]
+print(f"\n  first move changed by the skew book in {len(changed)}/{len(a)} pairs")
+for name in ("opponent_blunders","max_opponent_error","plies"):
+    d=[b[g][name]-a[g][name] for g in changed]
+    m=sum(d)/len(d); sd=(sum((x-m)**2 for x in d)/(len(d)-1))**.5
+    print(f"  changed pairs only, skew-standard {name:<20} {m:+.3f}  ({m/(sd/len(d)**.5):+.1f} sigma, paired)")
+EOF
 
 touch build/skew_pipeline.done

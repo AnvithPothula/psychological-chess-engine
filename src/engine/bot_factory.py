@@ -80,12 +80,18 @@ STANDARD: Final[BotSpec] = BotSpec(
 SKEW: Final[BotSpec] = BotSpec(
     name="skew",
     description=(
-        "Opens from the mined engine-equal skew book, then the same expectimax. "
-        "Differs from the standard arm in which openings it steers into, nothing else."
+        "Plays the mined engine-equal skew book where it has an entry, the standard "
+        "book everywhere else, then the same expectimax."
     ),
     book=True,
-    standard_path=SKEW_BOOK,
+    trap_path=SKEW_BOOK,
 )
+"""The skew book sits in the front slot, which is probed first and falls through
+to the standard book on a miss. Milestone 16 put it in the standard slot
+instead, which *replaced* 578,126 entries with 708: the arm had no book at plies
+0-2 and left book at once, so the run compared a book against almost none and
+never tested which openings to steer into. The control's front slot holds the
+185-entry trap book, so the arms now differ only in that small front book."""
 
 TRAP: Final[BotSpec] = BotSpec(
     name="trap",
@@ -123,11 +129,12 @@ def build_searcher(
 
     book: Optional[OpeningBook] = None
     if spec.book:
-        if spec.standard_path is not None and not spec.standard_path.exists():
-            raise FileNotFoundError(
-                f"{spec.standard_path} does not exist; run src.training.skew_miner "
-                "and src.training.polyglot_compiler first"
-            )
+        for path in (spec.trap_path, spec.standard_path):
+            if path is not None and not path.exists():
+                raise FileNotFoundError(
+                    f"{path} does not exist; run src.training.skew_miner "
+                    "and src.training.polyglot_compiler first"
+                )
         book = OpeningBook(
             trap_path=spec.trap_path,
             standard_path=spec.standard_path,
