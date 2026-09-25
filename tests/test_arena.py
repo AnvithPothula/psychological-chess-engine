@@ -192,7 +192,7 @@ def test_the_book_arms_differ_only_in_which_book_they_open() -> None:
     assert STANDARD.book is SKEW.book is True
     assert STANDARD.standard_path is None, "the control keeps the configured default"
     assert SKEW.standard_path is None, "the skew arm keeps the standard fallback too"
-    assert SKEW.trap_path is not None and SKEW.trap_path.name == "skew.bin"
+    assert SKEW.trap_path is not None and SKEW.trap_path.name == "repertoire.bin"
 
 
 def test_the_non_book_arms_really_open_no_book() -> None:
@@ -212,3 +212,16 @@ def test_a_missing_skew_book_is_fatal_rather_than_a_silent_fallback() -> None:
         with pytest.raises(FileNotFoundError):
             build_searcher(spec, None, None, opponent_rating=1500)  # type: ignore[arg-type]
 
+
+
+def test_an_arm_that_asks_for_prior_candidates_actually_gets_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The M16 book commit dropped ``proposer=`` and the trap arm silently lost its prior."""
+    from src.engine import policy_generator
+    from src.engine.bot_factory import build_searcher
+
+    sentinel = object()
+    monkeypatch.setattr(policy_generator, "NeuralCandidateGenerator", lambda path: sentinel)
+    searcher = build_searcher(TRAP, None, None, opponent_rating=1500)  # type: ignore[arg-type]
+    assert searcher.proposer is sentinel

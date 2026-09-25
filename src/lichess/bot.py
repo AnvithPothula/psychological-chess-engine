@@ -11,15 +11,24 @@ latency predictable, which is what stops us flagging.
 
 The game still runs on its own thread so the event stream keeps draining;
 without that, challenge and ``gameFinish`` events would queue behind the game.
+
+**Each game is a coin flip between two books.** Every opponent in the accepted
+band meets either the standard book or the skew repertoire, chosen at random,
+and the choice is logged with the game id. A live run that played only the
+repertoire would win nearly every game either way and could not say whether the
+book did anything; the randomised arm is what makes it an experiment.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Final, Iterator, Mapping, Optional, Protocol
+from pathlib import Path
+from typing import Any, Callable, Dict, Final, Iterator, Mapping, Optional, Protocol
 
 import chess
 import requests
@@ -28,9 +37,12 @@ from berserk.types.challenges import ChallengeDeclineReason
 
 from src import config as engine_config
 from src.engine import EvaluatorError
+from src.engine.book import OpeningBook
+from src.engine.bot_factory import SKEW, STANDARD, build_book
 from src.engine.policy_generator import load_proposer
 from src.engine.search import AdversarialSearcher
 from src.lichess.time_manager import TimeManager
+from src.types import MoveSource
 
 __all__ = ["BotConfig", "LichessBot", "LichessClient", "RatingAdaptiveModel", "main"]
 
@@ -48,6 +60,12 @@ DEFAULT_OPPONENT_RATING: Final[int] = 1500
 """Used when the opponent has no rating: Lichess AI, or a provisional new account."""
 
 NETWORK_ERRORS: Final[tuple[type[BaseException], ...]] = (requests.RequestException, OSError)
+
+SPEEDS: Final[tuple[str, ...]] = (
+    "ultraBullet", "bullet", "blitz", "rapid", "classical", "correspondence",
+)
+"""Lichess speed categories, fastest first, so a declined speed maps to
+``tooFast`` or ``tooSlow`` rather than a bare refusal."""
 
 
 class BotsApi(Protocol):
@@ -102,6 +120,20 @@ class BotConfig:
     max_reconnect_backoff_seconds: float = 60.0
     move_attempts: int = 3
 
+    min_rating: int = 1100
+    max_rating: int = 1700
+    """The band the skew positions were mined in. Outside it the skew was never
+    measured, so a game there adds noise to the experiment, not evidence."""
+
+    speeds: frozenset[str] = frozenset({"blitz", "rapid"})
+    """Also the mined speeds, for the same reason."""
+
+    control_share: float = 0.5
+    """Chance a game is played with the standard book instead of the repertoire."""
+
+    game_log: Optional[Path] = None
+    """JSONL of each game's arm and outcome, keyed by game id. ``None`` disables it."""
+
 
 @dataclass(slots=True)
 class GameSession:
@@ -115,6 +147,8 @@ class GameSession:
     opponent_rating: int
     maia_rating: int
     moves_played: int = field(default=0)
+    arm: str = ""
+    front_book_moves: int = 0
 
 
 class LichessBot:
@@ -129,9 +163,14 @@ class LichessBot:
         time_manager: Optional[TimeManager] = None,
         config: Optional[BotConfig] = None,
         bot_id: Optional[str] = None,
+        books: Optional[Mapping[str, OpeningBook]] = None,
+        rng: Optional[random.Random] = None,
     ) -> None:
         self.client = client
         self.searcher = searcher
+        self.books = books
+        """Arm name to book. ``None`` keeps whatever book the searcher was given."""
+        self._rng = rng if rng is not None else random.Random()
         self.human_model = human_model
         self.time_manager = time_manager if time_manager is not None else TimeManager()
         self.config = config if config is not None else BotConfig()
@@ -263,6 +302,23 @@ class LichessBot:
             return "tooFast"
         if initial > self.config.max_initial_seconds:
             return "tooSlow"
+
+        speed = str(challenge.get("speed", ""))
+        if speed not in self.config.speeds:
+            if speed not in SPEEDS:
+                return "timeControl"
+            allowed = [SPEEDS.index(s) for s in self.config.speeds if s in SPEEDS]
+            return "tooFast" if allowed and SPEEDS.index(speed) < min(allowed) else "tooSlow"
+
+        challenger = challenge.get("challenger")
+        challenger = challenger if isinstance(challenger, Mapping) else {}
+        if challenger.get("title") == "BOT":
+            return "noBot"
+        rating = challenger.get("rating")
+        if not isinstance(rating, (int, float)) or not (
+            self.config.min_rating <= rating <= self.config.max_rating
+        ):
+            return "generic"  # Lichess has no rating-band reason to send.
         return None
 
     # -- single-game slot ---------------------------------------------------
@@ -362,6 +418,10 @@ class LichessBot:
             logger.error("game %s: could not model rating %d (%s), keeping %d",
                          game_id, maia_rating, exc, self.human_model.rating)
             maia_rating = self.human_model.rating
+        arm = ""
+        if self.books:
+            arm = STANDARD.name if self._rng.random() < self.config.control_share else SKEW.name
+            self.searcher.book = self.books[arm]
         # The book bands off the same rating: traps the opponent is likely to
         # see through are simply not offered.
         if self.searcher.book is not None:
@@ -371,14 +431,24 @@ class LichessBot:
         self.searcher.opponent_rating = opponent_rating
 
         logger.info(
-            "game %s: playing %s against %s (%d) -> opponent model maia3@%d",
+            "game %s: playing %s against %s (%d) -> opponent model maia3@%d%s",
             game_id,
             "white" if my_color == chess.WHITE else "black",
             opponent_name,
             opponent_rating,
             maia_rating,
+            f", {arm} book" if arm else "",
         )
+        # Logged at the start as well as the end: a crash mid-game still leaves
+        # the arm on record, and the game id is enough to fetch the rest.
+        self._record({
+            "event": "start", "game": game_id, "arm": arm, "at": int(time.time()),
+            "colour": "white" if my_color == chess.WHITE else "black",
+            "rating": opponent_rating, "speed": str(event.get("speed", "")),
+            "rated": bool(event.get("rated", False)),
+        })
         return GameSession(
+            arm=arm,
             game_id=game_id,
             my_color=my_color,
             initial_fen=initial_fen,
@@ -400,6 +470,11 @@ class LichessBot:
                 f", {state['winner']} wins" if state.get("winner") else "",
                 session.moves_played,
             )
+            self._record({
+                "event": "finish", "game": session.game_id, "arm": session.arm,
+                "status": status, "winner": str(state.get("winner", "")),
+                "plies": session.moves_played, "front_book_moves": session.front_book_moves,
+            })
             return False
         if session.board.is_game_over(claim_draw=True):
             logger.info("game %s: position is terminal, waiting for the server", session.game_id)
@@ -421,6 +496,8 @@ class LichessBot:
             self._call_api("resign", lambda: self.client.bots.resign_game(session.game_id))
             return False
 
+        if result.source is MoveSource.BOOK_TRAP:
+            session.front_book_moves += 1
         san = session.board.san(result.move)
         logger.info(
             "game %s: playing %s (depth %d/%d) %s",
@@ -451,6 +528,16 @@ class LichessBot:
                 logger.error("game %s: cannot replay move %r, stopping replay", session.game_id, uci)
                 break
         session.moves_played = len(moves)
+
+    def _record(self, row: Mapping[str, Any]) -> None:
+        """Append one line to the game log. Ids and ratings only, no usernames."""
+        if self.config.game_log is None:
+            return
+        try:
+            with self.config.game_log.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row) + "\n")
+        except OSError as exc:
+            logger.error("lichess: could not write the game log (%s)", exc)
 
     # -- API helpers --------------------------------------------------------
 
@@ -508,11 +595,11 @@ def _rating_of(player: Mapping[str, Any]) -> int:
 def main() -> int:
     """Entry point: ``python -m src.lichess.bot``."""
     import argparse
+    from contextlib import ExitStack
 
     import berserk
 
     from src.engine import Maia3Evaluator, StockfishEvaluator
-    from src.engine.book import OpeningBook
 
     parser = argparse.ArgumentParser(prog="python -m src.lichess.bot", description="Lichess bot bridge.")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
@@ -520,7 +607,17 @@ def main() -> int:
                         help="Decline games with a shorter initial clock (seconds).")
     parser.add_argument("--no-policy", action="store_true",
                         help="Skip the neural proposer and use the Stockfish scan alone.")
+    defaults = BotConfig()
+    parser.add_argument("--min-rating", type=int, default=defaults.min_rating)
+    parser.add_argument("--max-rating", type=int, default=defaults.max_rating)
+    parser.add_argument("--speeds", nargs="+", default=sorted(defaults.speeds), choices=SPEEDS)
+    parser.add_argument("--control-share", type=float, default=defaults.control_share,
+                        help="Chance a game uses the standard book instead of the repertoire. "
+                             "0 plays every game with the repertoire and measures nothing.")
+    parser.add_argument("--game-log", type=Path, default=Path("build/live_games.jsonl"))
     args = parser.parse_args()
+    if not 0.0 <= args.control_share <= 1.0:
+        parser.error("--control-share must be between 0 and 1")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -537,20 +634,34 @@ def main() -> int:
 
     session = berserk.TokenSession(token)
     client = berserk.Client(session=session)
+    args.game_log.parent.mkdir(parents=True, exist_ok=True)
+    config = BotConfig(
+        min_initial_seconds=args.min_clock, min_rating=args.min_rating,
+        max_rating=args.max_rating, speeds=frozenset(args.speeds),
+        control_share=args.control_share, game_log=args.game_log,
+    )
 
-    with (
-        StockfishEvaluator() as stockfish,
-        Maia3Evaluator(engine_config.DEFAULT_MAIA_RATING) as maia,
-        OpeningBook() as book,
-    ):
+    with ExitStack() as stack:
+        books: Dict[str, OpeningBook] = {}
+        for spec in (STANDARD, SKEW):
+            try:
+                book = build_book(spec, opponent_rating=DEFAULT_OPPONENT_RATING)
+            except FileNotFoundError as exc:
+                logger.error("%s", exc)
+                return 1
+            assert book is not None, f"the {spec.name} arm opens a book"
+            books[spec.name] = stack.enter_context(book)
+        stockfish = stack.enter_context(StockfishEvaluator())
+        maia = stack.enter_context(Maia3Evaluator(engine_config.DEFAULT_MAIA_RATING))
         bot = LichessBot(
             client,
             AdversarialSearcher(
-                stockfish, maia, book=book,
+                stockfish, maia, book=books[STANDARD.name],
                 proposer=None if args.no_policy else load_proposer(),
             ),
             maia,
-            config=BotConfig(min_initial_seconds=args.min_clock),
+            config=config,
+            books=books,
         )
         try:
             bot.run()
@@ -559,7 +670,6 @@ def main() -> int:
             bot.stop()
     logger.info("lichess: engine processes terminated, books unmapped")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

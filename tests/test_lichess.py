@@ -470,3 +470,56 @@ def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
+
+# --- the live experiment: band, speed, and a randomised book per game --------
+
+
+def _challenge(**challenger: Any) -> Dict[str, Any]:
+    challenge = dict(challenge_event()["challenge"])
+    challenge["challenger"] = {"id": "human", "name": "human", "rating": 1500, **challenger}
+    return challenge
+
+
+def test_only_humans_in_the_mined_band_at_the_mined_speeds_are_accepted() -> None:
+    bot, _ = build_bot(FakeBots())
+    assert bot._decline_reason(_challenge()) is None
+    assert bot._decline_reason(_challenge(rating=1099)) == "generic"
+    assert bot._decline_reason(_challenge(rating=1701)) == "generic"
+    assert bot._decline_reason(_challenge(rating=None)) == "generic"
+    assert bot._decline_reason(_challenge(title="BOT")) == "noBot"
+    assert bot._decline_reason({**_challenge(), "speed": "bullet"}) == "tooFast"
+    assert bot._decline_reason({**_challenge(), "speed": "classical"}) == "tooSlow"
+
+
+class _Book:
+    def __init__(self) -> None:
+        self.rating: Optional[int] = None
+
+    def set_opponent_rating(self, rating: int) -> None:
+        self.rating = rating
+
+
+def test_each_game_draws_its_book_at_random_and_logs_the_draw(tmp_path: Any) -> None:
+    """A live run without a control arm could not attribute anything to the book."""
+    import json
+    import random
+
+    books = {"standard": _Book(), "skew": _Book()}
+    log = tmp_path / "games.jsonl"
+    bot, _ = build_bot(FakeBots())
+    bot.books = books  # type: ignore[assignment]
+    bot.config = BotConfig(game_log=log, control_share=0.5)
+    bot._rng = random.Random(0)
+
+    arms = []
+    for game in range(40):
+        session = bot._start_session(f"g{game}", _game_full())
+        assert bot.searcher.book is books[session.arm]
+        assert books[session.arm].rating == 1630, "the chosen book is banded to the opponent"
+        arms.append(session.arm)
+    assert 10 < arms.count("skew") < 30, "a fair coin, not one arm"
+
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [row["arm"] for row in rows] == arms
+    assert all(row["event"] == "start" and "human" not in json.dumps(row) for row in rows)

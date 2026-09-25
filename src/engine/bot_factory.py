@@ -22,13 +22,13 @@ from src.training.train_dpo import WARM_CHECKPOINT
 from src.types import SearchConfig
 
 __all__ = [
-    "BotSpec", "BASELINE", "TRAP", "STANDARD", "SKEW", "ARMS", "build_searcher",
+    "BotSpec", "BASELINE", "TRAP", "STANDARD", "SKEW", "ARMS", "build_book", "build_searcher",
 ]
 
 logger = logging.getLogger(__name__)
 
-SKEW_BOOK: Final[Path] = Path("src/engine/books/skew.bin")
-"""Mined by src.training.skew_miner and packed by src.training.polyglot_compiler."""
+REPERTOIRE_BOOK: Final[Path] = Path("src/engine/books/repertoire.bin")
+"""Built by src.training.repertoire_builder from the miner's tree and finds."""
 
 ARENA_SEARCH: Final[SearchConfig] = SearchConfig(
     root_depth=8, leaf_depth=8, max_candidates=5, max_replies=5
@@ -80,18 +80,22 @@ STANDARD: Final[BotSpec] = BotSpec(
 SKEW: Final[BotSpec] = BotSpec(
     name="skew",
     description=(
-        "Plays the mined engine-equal skew book where it has an entry, the standard "
-        "book everywhere else, then the same expectimax."
+        "Steers toward mined engine-equal skew positions and plays the skew move on "
+        "arrival, the standard book once the opponent leaves the repertoire, then "
+        "the same expectimax."
     ),
     book=True,
-    trap_path=SKEW_BOOK,
+    trap_path=REPERTOIRE_BOOK,
 )
-"""The skew book sits in the front slot, which is probed first and falls through
-to the standard book on a miss. Milestone 16 put it in the standard slot
-instead, which *replaced* 578,126 entries with 708: the arm had no book at plies
-0-2 and left book at once, so the run compared a book against almost none and
-never tested which openings to steer into. The control's front slot holds the
-185-entry trap book, so the arms now differ only in that small front book."""
+"""The repertoire sits in the front slot, which is probed first and falls through
+to the standard book on a miss. It holds the skew moves as well as the path to
+them, so skew.bin has no slot of its own: see src.training.repertoire_builder.
+
+History, because both mistakes produced clean-looking nulls. Milestone 16 put
+the skew book in the standard slot, which *replaced* 578,126 entries with 708
+and left the arm bookless from ply 0. Moving it to the front slot fixed coverage
+but not dosage: from the initial position it fired in 2 of 40 games, because
+nothing steered toward plies 7-10 of the mined lines."""
 
 TRAP: Final[BotSpec] = BotSpec(
     name="trap",
@@ -106,6 +110,28 @@ TRAP: Final[BotSpec] = BotSpec(
 ARMS: Final[dict[str, BotSpec]] = {
     arm.name: arm for arm in (BASELINE, TRAP, STANDARD, SKEW)
 }
+
+
+def build_book(spec: BotSpec, *, opponent_rating: int) -> Optional[OpeningBook]:
+    """The arm's books, or ``None`` for a bookless arm. Raises if one is missing.
+
+    ``OpeningBook`` itself treats a missing file as empty, which is right for a
+    bot in production and wrong for an experiment: the arm would quietly become
+    its own control. Shared with the Lichess bridge for the same reason.
+    """
+    if not spec.book:
+        return None
+    for path in (spec.trap_path, spec.standard_path):
+        if path is not None and not path.exists():
+            raise FileNotFoundError(
+                f"{path} does not exist; run src.training.skew_miner --tree "
+                "and src.training.repertoire_builder first"
+            )
+    return OpeningBook(
+        trap_path=spec.trap_path,
+        standard_path=spec.standard_path,
+        opponent_rating=opponent_rating,
+    )
 
 
 def build_searcher(
@@ -127,21 +153,10 @@ def build_searcher(
 
         proposer = NeuralCandidateGenerator(spec.prior_path)
 
-    book: Optional[OpeningBook] = None
-    if spec.book:
-        for path in (spec.trap_path, spec.standard_path):
-            if path is not None and not path.exists():
-                raise FileNotFoundError(
-                    f"{path} does not exist; run src.training.skew_miner "
-                    "and src.training.polyglot_compiler first"
-                )
-        book = OpeningBook(
-            trap_path=spec.trap_path,
-            standard_path=spec.standard_path,
-            opponent_rating=opponent_rating,
-        )
-
-    searcher = AdversarialSearcher(stockfish, opponent, config=spec.search, book=book)
+    book = build_book(spec, opponent_rating=opponent_rating)
+    searcher = AdversarialSearcher(
+        stockfish, opponent, config=spec.search, book=book, proposer=proposer
+    )
     searcher.opponent_rating = opponent_rating
     return searcher
 
