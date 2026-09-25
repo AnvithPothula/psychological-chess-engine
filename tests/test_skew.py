@@ -201,6 +201,7 @@ def test_a_mine_killed_mid_run_keeps_what_it_already_found(tmp_path: Path) -> No
             client,  # type: ignore[arg-type]
             evaluator,
             destination,
+            tmp_path / "tree.jsonl",
             max_ply=20, min_games=1_000, min_skew=0.01,
         )
 
@@ -209,6 +210,10 @@ def test_a_mine_killed_mid_run_keeps_what_it_already_found(tmp_path: Path) -> No
     assert records, "the file exists but is empty, which is the same data loss"
     assert all(record["fen"] for record in records), "a record without a FEN cannot be compiled"
     assert compile_book(records, tmp_path / "skew.bin") > 0
+
+    tree = [json.loads(line) for line in (tmp_path / "tree.jsonl").read_text().splitlines()]
+    assert tree, "the tree is what the repertoire is built from; it must survive a kill too"
+    assert tree[0]["games"] == 10_000 and tree[0]["moves"][0]["equal"] is True
 
 
 def test_the_token_falls_back_to_dotenv_and_the_environment_wins(

@@ -71,6 +71,7 @@ an nginx 401, which is why earlier work in this repository scraped a third-party
 mirror instead; a bot token is sufficient."""
 
 DEFAULT_OUTPUT: Final[Path] = Path("build/skew_positions.jsonl")
+DEFAULT_TREE: Final[Path] = Path("build/skew_tree.jsonl")
 DEFAULT_SPEEDS: Final[str] = "blitz,rapid"
 DEFAULT_RATINGS: Final[str] = "1600,1800,2000"
 DEFAULT_MAX_PLY: Final[int] = 20
@@ -285,6 +286,7 @@ def mine(
     client: ExplorerClient,
     evaluator: StockfishEvaluator,
     destination: Path,
+    tree_destination: Path,
     *,
     max_ply: int,
     min_games: int,
@@ -305,10 +307,17 @@ def mine(
     finds and an empty file, and the log line carried no FEN to rebuild them
     from. A scraper that can be interrupted has to checkpoint, and this one can
     always be interrupted.
+
+    ``tree_destination`` gets one line per visited position: its FEN, its game
+    count, and the moves examined with their counts and whether they passed the
+    engine-equal gate. The finds alone say where the skewed positions are but not
+    how to get there; the repertoire builder needs the tree, and the counts in it
+    are human reply frequencies for the rating bands mined, which no book has.
     """
     baselines = dict(zip((chess.WHITE, chess.BLACK), baseline(client)))
     destination.parent.mkdir(parents=True, exist_ok=True)
     sink = destination.open("w", encoding="utf-8")
+    tree_sink = tree_destination.open("w", encoding="utf-8")
     found: List[SkewEntry] = []
     seen: set[str] = set()
     frontier: Deque[chess.Board] = deque([chess.Board()])
@@ -331,8 +340,10 @@ def mine(
             continue
 
         mover = board.turn
+        examined: List[Dict[str, Any]] = []
         for entry in list(payload.get("moves", []))[:BRANCHES_PER_NODE]:
             white, draws, black, total = _counts(entry)
+            examined.append({"uci": str(entry.get("uci", "")), "games": total, "equal": False})
             if total < min_games:
                 continue
             try:
@@ -351,6 +362,7 @@ def mine(
             finally:
                 board.pop()
 
+            examined[-1]["equal"] = True
             frontier.append(child)
             score = score_for(white, draws, black, mover)
             skew = score - baselines[mover]
@@ -379,7 +391,12 @@ def mine(
                 board.ply(), board.san(move), found[-1].bot_color,
                 score, skew, f"{total:,}", evaluation, found[-1].average_rating,
             )
+        tree_sink.write(json.dumps(
+            {"fen": board.fen(), "games": _counts(payload)[3], "moves": examined}
+        ) + "\n")
+        tree_sink.flush()
     sink.close()
+    tree_sink.close()
     logger.info(
         "mine: %d skewed moves from %d positions (%d rate limits, interval %.1fs)",
         len(found), visited, client.rate_limits, client._interval,
@@ -408,6 +425,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Mine engine-equal opening moves whose human results are skewed.",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--tree", type=Path, default=DEFAULT_TREE,
+                        help="Every visited position with its move counts, for the repertoire.")
     parser.add_argument("--speeds", default=DEFAULT_SPEEDS)
     parser.add_argument("--ratings", default=DEFAULT_RATINGS)
     parser.add_argument("--max-ply", type=int, default=DEFAULT_MAX_PLY)
@@ -436,7 +455,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         StockfishEvaluator() as evaluator,
     ):
         entries = mine(
-            client, evaluator, args.output,
+            client, evaluator, args.output, args.tree,
             max_ply=args.max_ply, min_games=args.min_games, min_skew=args.min_skew,
             max_eval=args.max_eval, depth=args.depth, max_positions=args.max_positions,
         )
