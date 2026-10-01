@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import chess
@@ -40,6 +41,21 @@ def test_the_error_on_a_rate_is_clustered_by_game_not_counted_over_moves() -> No
     summary = summarise(games)
     assert summary.blunder_rate == pytest.approx(0.1)
     assert summary.blunder_se == pytest.approx(0.1), "binomial over 20 moves would say 0.067"
+
+    same_person = [GameStats(g.game, g.arm, g.status, g.opponent_moves, g.blunders, 0, 0, None, 0,
+                             opponent="one") for g in games]
+    assert math.isnan(summarise(same_person).blunder_se), "two games, one opponent: no spread yet"
+
+
+def test_one_game_against_two_reports_no_sigma_and_an_empty_group_no_table() -> None:
+    """Seen live: one game against two printed +4.5 sigma, and an empty group -7.5."""
+    games = [GameStats("s1", "standard", "mate", 19, 1, 1299, 254, 12, 0, opponent="a"),
+             GameStats("s2", "standard", "mate", 17, 3, 1774, 509, 26, 0, opponent="b"),
+             GameStats("k1", "skew", "resign", 17, 1, 1284, 955, 25, 0, opponent="c")]
+    text = report(games, "standard", "skew")
+    max_error_row = next(line for line in text.splitlines() if "max error" in line)
+    assert max_error_row.rstrip().endswith("n/a")
+    assert "no games in 'exposed' yet" in text
 
 
 def test_the_report_leads_with_the_arms_and_scales_by_the_exposure_uplift() -> None:

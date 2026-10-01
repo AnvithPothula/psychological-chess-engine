@@ -29,6 +29,7 @@ is appended one game at a time, so an interrupted run loses nothing it finished.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -77,6 +78,9 @@ class GameStats:
     decisive_ply: Optional[int]
     skew_moves: int
     """Mined skew moves the bot played. Non-zero is what "exposed" means."""
+    opponent: str = ""
+    """Short hash of the opponent's id, for clustering: the same person often
+    plays several games in a row, and those are not independent samples."""
 
 
 def _stm_score(board: chess.Board, evaluate: Callable[[chess.Board], int]) -> int:
@@ -97,6 +101,7 @@ def score_game(
     skew_moves: Set[Tuple[str, str]],
     evaluate: Callable[[chess.Board], int],
     initial_fen: Optional[str] = None,
+    opponent: str = "",
 ) -> GameStats:
     """Score every opponent move by what it lost against the engine's best.
 
@@ -131,6 +136,7 @@ def score_game(
     return GameStats(
         game=game, arm=arm, status=status, opponent_moves=moves, blunders=blunders,
         cp_lost=cp_lost, max_error=max_error, decisive_ply=decisive, skew_moves=skewed,
+        opponent=opponent,
     )
 
 
@@ -152,37 +158,44 @@ class Summary:
     exposed_share: float
 
 
-def _ratio(numerators: Sequence[float], denominators: Sequence[float]) -> Tuple[float, float]:
-    """A pooled rate and its standard error clustered by game.
+def _ratio(
+    numerators: Sequence[float], denominators: Sequence[float], clusters: Sequence[str]
+) -> Tuple[float, float]:
+    """A pooled rate and its standard error clustered by opponent.
 
-    Moves within a game share an opponent, a position type and a clock, so they
-    are not independent trials; the binomial error over moves the arena uses
-    would overstate the precision here.
+    Moves within a game share an opponent, a position type and a clock, and
+    games against the same opponent share the opponent, so neither moves nor
+    games are independent trials. With fewer than two opponents the error is
+    undefined (NaN), not zero: one game says nothing about its own spread.
     """
     total = sum(denominators)
     if not total:
-        return 0.0, 0.0
+        return 0.0, math.nan
     rate = sum(numerators) / total
-    n = len(denominators)
+    residuals: Dict[str, float] = {}
+    for x, m, cluster in zip(numerators, denominators, clusters):
+        residuals[cluster] = residuals.get(cluster, 0.0) + x - rate * m
+    n = len(residuals)
     if n < 2:
-        return rate, 0.0
-    spread = sum((x - rate * m) ** 2 for x, m in zip(numerators, denominators))
-    return rate, math.sqrt(spread * n / (n - 1)) / total
+        return rate, math.nan
+    return rate, math.sqrt(sum(r * r for r in residuals.values()) * n / (n - 1)) / total
 
 
-def _mean(values: Sequence[float]) -> Tuple[float, float]:
-    if not values:
-        return 0.0, 0.0
-    se = statistics.stdev(values) / math.sqrt(len(values)) if len(values) > 1 else 0.0
-    return statistics.fmean(values), se
+def _mean(values: Sequence[float], clusters: Sequence[str]) -> Tuple[float, float]:
+    return _ratio(values, [1.0] * len(values), clusters)
 
 
 def summarise(games: Sequence[GameStats]) -> Summary:
     moves = [float(g.opponent_moves) for g in games]
-    blunder_rate, blunder_se = _ratio([float(g.blunders) for g in games], moves)
-    cp_loss, cp_loss_se = _ratio([float(g.cp_lost) for g in games], moves)
-    max_error, max_error_se = _mean([float(g.max_error) for g in games if g.opponent_moves])
-    decisive, decisive_se = _mean([float(g.decisive_ply) for g in games if g.decisive_ply is not None])
+    who = [g.opponent or g.game for g in games]
+    blunder_rate, blunder_se = _ratio([float(g.blunders) for g in games], moves, who)
+    cp_loss, cp_loss_se = _ratio([float(g.cp_lost) for g in games], moves, who)
+    played = [g for g in games if g.opponent_moves]
+    max_error, max_error_se = _mean([float(g.max_error) for g in played],
+                                    [g.opponent or g.game for g in played])
+    decided = [g for g in games if g.decisive_ply is not None]
+    decisive, decisive_se = _mean([float(g.decisive_ply or 0) for g in decided],
+                                  [g.opponent or g.game for g in decided])
     return Summary(
         games=len(games), moves=int(sum(moves)),
         blunder_rate=blunder_rate, blunder_se=blunder_se,
@@ -194,14 +207,22 @@ def summarise(games: Sequence[GameStats]) -> Summary:
 
 
 def _sigma(a: float, a_se: float, b: float, b_se: float) -> str:
-    """Formatted, because zero spread is undefined, not zero: printing +0.0 there
-    would read as "no difference" for a difference nothing can yet measure."""
+    """Formatted, because an undefined spread is not a zero one: a group with one
+    opponent has no measurable spread, and dividing by the other group's alone
+    printed +4.5 sigma for one game against two."""
     spread = math.hypot(a_se, b_se)
-    return f"{(b - a) / spread:+.1f}" if spread else "n/a"
+    return f"{(b - a) / spread:+.1f}" if spread and not math.isnan(spread) else "n/a"
+
+
+def _se(value: float) -> str:
+    return "  n/a" if math.isnan(value) else f"±{value:<4.2f}"
 
 
 def _table(title: str, left: Tuple[str, Summary], right: Tuple[str, Summary]) -> List[str]:
     (left_name, a), (right_name, b) = left, right
+    if not a.games or not b.games:
+        empty = left_name if not a.games else right_name
+        return [f"\n{title}", f"  no games in '{empty}' yet: {a.games} vs {b.games}"]
     rows = [
         f"\n{title}",
         f"  {'':<22}{left_name:>16}{right_name:>16}{'difference':>14}{'sigma':>8}",
@@ -216,7 +237,7 @@ def _table(title: str, left: Tuple[str, Summary], right: Tuple[str, Summary]) ->
     ):
         x, x_se, y, y_se = pairs
         rows.append(
-            f"  {name:<22}{x * scale:>11.2f} ±{x_se * scale:<4.2f}{y * scale:>11.2f} ±{y_se * scale:<4.2f}"
+            f"  {name:<22}{x * scale:>11.2f} {_se(x_se * scale)}{y * scale:>11.2f} {_se(y_se * scale)}"
             f"{(y - x) * scale:>+14.2f}{_sigma(x, x_se, y, y_se):>8}"
         )
     return rows
@@ -291,6 +312,15 @@ def _export(client: Any, ids: Sequence[str]) -> List[Mapping[str, Any]]:
     raise RuntimeError(f"export failed {MAX_ATTEMPTS} times; try again later")
 
 
+def _opponent_key(exported: Mapping[str, Any], bot_colour: chess.Color) -> str:
+    """A short hash of the opponent's id: enough to cluster by, without keeping names."""
+    players = exported.get("players", {})
+    side = players.get("black" if bot_colour == chess.WHITE else "white", {}) if isinstance(players, Mapping) else {}
+    user = side.get("user", {}) if isinstance(side, Mapping) else {}
+    name = str(user.get("id", "")) if isinstance(user, Mapping) else ""
+    return hashlib.sha256(name.encode()).hexdigest()[:12] if name else ""
+
+
 def _batches(items: Sequence[str], size: int) -> Iterable[Sequence[str]]:
     for start in range(0, len(items), size):
         yield items[start:start + size]
@@ -318,7 +348,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         str(row["game"]): row for row in read_jsonl(args.log)
         if row.get("event") == "start" and not row.get("opponent_bot")
     }
-    cached = {str(row["game"]): row for row in read_jsonl(args.cache)}
+    # Rows cached before opponents were recorded are fetched again; the newer
+    # line wins when the cache is read.
+    cached = {str(row["game"]): row for row in read_jsonl(args.cache) if "opponent" in row}
     pending = [game for game in starts if game not in cached]
     logger.info("live: %d games logged, %d cached, %d to fetch", len(starts), len(cached), len(pending))
 
@@ -347,11 +379,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                     if game not in starts or status in UNFINISHED:
                         continue
                     start = starts[game]
+                    bot_colour = chess.WHITE if start.get("colour") == "white" else chess.BLACK
                     stats = score_game(
                         game, str(start.get("arm", "")), status,
-                        str(exported.get("moves", "")).split(),
-                        chess.WHITE if start.get("colour") == "white" else chess.BLACK,
+                        str(exported.get("moves", "")).split(), bot_colour,
                         skew_moves, evaluate, exported.get("initialFen"),
+                        opponent=_opponent_key(exported, bot_colour),
                     )
                     sink.write(json.dumps(asdict(stats)) + "\n")
                     sink.flush()
