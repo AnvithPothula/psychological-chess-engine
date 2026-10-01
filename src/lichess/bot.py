@@ -53,6 +53,12 @@ STARTING_POSITION: Final[str] = "startpos"
 RATE_LIMIT_WAIT_SECONDS: Final[float] = 60.0
 """Lichess asks clients to back off a full minute after a 429."""
 
+STABLE_STREAM_SECONDS: Final[float] = 60.0
+"""A stream the server closes sooner than this was not a healthy connection, and
+reopening it does not reset the backoff. Without this a stream closed on open
+was reopened every two seconds indefinitely -- seen with a second bot process
+running on the same account."""
+
 DEFAULT_MIN_INITIAL_SECONDS: Final[float] = 60.0
 """Below this the search cannot move quickly enough to be worth playing."""
 
@@ -200,14 +206,23 @@ class LichessBot:
         backoff = self.config.reconnect_backoff_seconds
 
         while not self._stop.is_set():
+            opened = time.monotonic()
             try:
                 logger.info("lichess: opening the incoming event stream")
                 for event in self.client.bots.stream_incoming_events():
                     if self._stop.is_set():
                         return
                     self._handle_event(event)
-                logger.warning("lichess: event stream closed by the server")
-                backoff = self.config.reconnect_backoff_seconds
+                lasted = time.monotonic() - opened
+                if lasted >= STABLE_STREAM_SECONDS:
+                    logger.warning("lichess: event stream closed by the server")
+                    backoff = self.config.reconnect_backoff_seconds
+                else:
+                    logger.warning(
+                        "lichess: event stream closed by the server after %.0fs, retrying in %.0fs; "
+                        "if this repeats, check for a second bot process on this account",
+                        lasted, backoff,
+                    )
             except ResponseError as exc:
                 backoff = self._after_response_error("event stream", exc, backoff)
             except NETWORK_ERRORS as exc:

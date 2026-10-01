@@ -532,3 +532,24 @@ def test_bots_are_declined_unless_allowed_and_then_skip_the_human_band() -> None
     bot.config = BotConfig(allow_bots=True)
     assert bot._decline_reason(strong_bot) is None
     assert bot._decline_reason(_challenge(rating=2900)) == "generic", "humans keep the band"
+
+
+def test_a_stream_closed_on_open_backs_off_instead_of_reconnecting_every_two_seconds() -> None:
+    """Seen live: a second bot process made the server close the stream on open,
+    and the bridge reopened it every 2s because a clean close reset the backoff."""
+    bot, _ = build_bot(FakeBots(events=[]))
+
+    class Clock:
+        waits: List[float] = []
+
+        def is_set(self) -> bool:
+            return False
+
+        def wait(self, timeout: float) -> bool:
+            self.waits.append(timeout)
+            return len(self.waits) >= 7
+
+    clock = Clock()
+    bot._stop = clock  # type: ignore[assignment]
+    bot.run()
+    assert clock.waits == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
