@@ -134,6 +134,10 @@ class BotConfig:
     game_log: Optional[Path] = None
     """JSONL of each game's arm and outcome, keyed by game id. ``None`` disables it."""
 
+    allow_bots: bool = False
+    """Accept BOT challengers at any rating and speed. For play, not data: their
+    games are logged with ``opponent_bot`` and the analyzer leaves them out."""
+
 
 @dataclass(slots=True)
 class GameSession:
@@ -303,6 +307,11 @@ class LichessBot:
         if initial > self.config.max_initial_seconds:
             return "tooSlow"
 
+        challenger = challenge.get("challenger")
+        challenger = challenger if isinstance(challenger, Mapping) else {}
+        if challenger.get("title") == "BOT":
+            return None if self.config.allow_bots else "noBot"
+
         speed = str(challenge.get("speed", ""))
         if speed not in self.config.speeds:
             if speed not in SPEEDS:
@@ -310,10 +319,6 @@ class LichessBot:
             allowed = [SPEEDS.index(s) for s in self.config.speeds if s in SPEEDS]
             return "tooFast" if allowed and SPEEDS.index(speed) < min(allowed) else "tooSlow"
 
-        challenger = challenge.get("challenger")
-        challenger = challenger if isinstance(challenger, Mapping) else {}
-        if challenger.get("title") == "BOT":
-            return "noBot"
         rating = challenger.get("rating")
         if not isinstance(rating, (int, float)) or not (
             self.config.min_rating <= rating <= self.config.max_rating
@@ -446,6 +451,7 @@ class LichessBot:
             "colour": "white" if my_color == chess.WHITE else "black",
             "rating": opponent_rating, "speed": str(event.get("speed", "")),
             "rated": bool(event.get("rated", False)),
+            "opponent_bot": opponent.get("title") == "BOT",
         })
         return GameSession(
             arm=arm,
@@ -615,6 +621,11 @@ def main() -> int:
                         help="Chance a game uses the standard book instead of the repertoire. "
                              "0 plays every game with the repertoire and measures nothing.")
     parser.add_argument("--game-log", type=Path, default=Path("build/live_games.jsonl"))
+    parser.add_argument("--allow-bots", action="store_true",
+                        help="Also accept BOT challengers, at any rating and speed. Not data.")
+    parser.add_argument("--arena", default=None,
+                        help="Join this Arena on start. Only Arenas created with bots allowed "
+                             "admit BOT accounts, and the token needs the tournament:write scope.")
     args = parser.parse_args()
     if not 0.0 <= args.control_share <= 1.0:
         parser.error("--control-share must be between 0 and 1")
@@ -638,7 +649,7 @@ def main() -> int:
     config = BotConfig(
         min_initial_seconds=args.min_clock, min_rating=args.min_rating,
         max_rating=args.max_rating, speeds=frozenset(args.speeds),
-        control_share=args.control_share, game_log=args.game_log,
+        control_share=args.control_share, game_log=args.game_log, allow_bots=args.allow_bots,
     )
 
     with ExitStack() as stack:
@@ -663,6 +674,11 @@ def main() -> int:
             config=config,
             books=books,
         )
+        if args.arena and not bot._call_api(
+            "join arena", lambda: client.tournaments.join_arena(args.arena)
+        ):
+            logger.error("lichess: could not join arena %s; see the warning above", args.arena)
+            return 1
         try:
             bot.run()
         except KeyboardInterrupt:

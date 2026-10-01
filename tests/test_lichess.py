@@ -523,3 +523,12 @@ def test_each_game_draws_its_book_at_random_and_logs_the_draw(tmp_path: Any) -> 
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert [row["arm"] for row in rows] == arms
     assert all(row["event"] == "start" and "human" not in json.dumps(row) for row in rows)
+
+
+def test_bots_are_declined_unless_allowed_and_then_skip_the_human_band() -> None:
+    bot, _ = build_bot(FakeBots())
+    strong_bot = {**_challenge(title="BOT", rating=2900), "speed": "bullet"}
+    assert bot._decline_reason(strong_bot) == "noBot"
+    bot.config = BotConfig(allow_bots=True)
+    assert bot._decline_reason(strong_bot) is None
+    assert bot._decline_reason(_challenge(rating=2900)) == "generic", "humans keep the band"

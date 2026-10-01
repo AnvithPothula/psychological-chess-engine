@@ -312,7 +312,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     from src.engine.bot_factory import SKEW, STANDARD
 
-    starts = {str(row["game"]): row for row in read_jsonl(args.log) if row.get("event") == "start"}
+    # Bot opponents are accepted for play with --allow-bots; they are not the
+    # population the skew was mined from.
+    starts = {
+        str(row["game"]): row for row in read_jsonl(args.log)
+        if row.get("event") == "start" and not row.get("opponent_bot")
+    }
     cached = {str(row["game"]): row for row in read_jsonl(args.cache)}
     pending = [game for game in starts if game not in cached]
     logger.info("live: %d games logged, %d cached, %d to fetch", len(starts), len(cached), len(pending))
