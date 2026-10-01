@@ -61,6 +61,7 @@ SPEEDS: Final[Tuple[str, ...]] = ("Rated Blitz", "Rated Rapid")
 """Lichess ``Event`` prefixes for the mined speeds; tournament games included."""
 
 RATING_BAND: Final[int] = 200
+CORE_BAND: Final[Tuple[int, int]] = (1100, 1700)
 BOOTSTRAP_REPS: Final[int] = 200
 
 _COMMENT = re.compile(r"\{[^}]*\}")
@@ -165,6 +166,8 @@ def scan(
             continue
         if headers.get("Termination") == "Abandoned":
             continue
+        if "BOT" in (headers.get("WhiteTitle"), headers.get("BlackTitle")):
+            continue  # the dumps include Bot API games; the question is about humans
         white, black = _elo(headers, "WhiteElo"), _elo(headers, "BlackElo")
         if not (min_elo <= white <= max_elo and min_elo <= black <= max_elo):
             continue
@@ -334,8 +337,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     scan_cmd.add_argument("--source", required=True, help="URL, path, or - for stdin; .zst is decompressed.")
     scan_cmd.add_argument("--skew", type=Path, default=DEFAULT_SKEW)
     scan_cmd.add_argument("--out", type=Path, default=DEFAULT_CANDIDATES)
-    scan_cmd.add_argument("--min-elo", type=int, default=1100)
-    scan_cmd.add_argument("--max-elo", type=int, default=1700)
+    scan_cmd.add_argument("--min-elo", type=int, default=1000,
+                          help="Wider than the mined 1100-1700, so the report can say whether "
+                               "the effect holds outside it; the core band is reported on its own.")
+    scan_cmd.add_argument("--max-elo", type=int, default=2000)
     scan_cmd.add_argument("--per-group", type=int, default=30,
                           help="Games kept per position and group (treated, control).")
     scan_cmd.add_argument("--max-ply", type=int, default=11)
@@ -383,7 +388,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                     logger.info("evaluate: %d/%d batches", finished, len(jobs))
         return 0
 
-    print(report(list(read_jsonl(args.evaluated))))
+    rows = list(read_jsonl(args.evaluated))
+    core = [r for r in rows if CORE_BAND[0] <= r["mover_elo"] <= CORE_BAND[1]
+            and CORE_BAND[0] <= r["opponent_elo"] <= CORE_BAND[1]]
+    print(f"BOTH PLAYERS {CORE_BAND[0]}-{CORE_BAND[1]} (the band the skew was mined in)")
+    print(report(core))
+    print("\nEVERY GAME SCANNED (default 1000-2000)")
+    print(report(rows))
     return 0
 
 

@@ -34,6 +34,15 @@ PGN = """[Event "Rated Blitz game"]
 
 1. e4 e5 2. Nf3 Nc6 1-0
 
+[Event "Rated Blitz game"]
+[Site "https://lichess.org/bot"]
+[WhiteElo "1500"]
+[BlackElo "1450"]
+[WhiteTitle "BOT"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 1-0
+
 [Event "Rated Rapid game"]
 [Site "https://lichess.org/ddd"]
 [WhiteElo "1900"]
@@ -46,7 +55,7 @@ PGN = """[Event "Rated Blitz game"]
 
 def test_movetext_is_read_without_clocks_evals_glyphs_or_move_numbers() -> None:
     games = list(iter_games(iter(PGN.splitlines(keepends=True))))
-    assert len(games) == 4
+    assert len(games) == 5
     headers, sans = games[0]
     assert headers["Site"] == "https://lichess.org/aaa"
     assert sans == ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6"]
@@ -62,7 +71,7 @@ def test_scan_keeps_only_the_band_and_speeds_and_splits_at_the_mined_position() 
                   min_elo=1100, max_elo=1700, per_group=10, max_ply=11)
 
     rows = [json.loads(line) for line in sink.getvalue().splitlines()]
-    assert counts == {"read": 4, "eligible": 2, "kept": 2}, "bullet and an 1900 player are out"
+    assert counts == {"read": 5, "eligible": 2, "kept": 2}, "bullet, a BOT and a 1900 player are out"
     assert [(r["site"][-3:], r["treated"], r["played"]) for r in rows] == [
         ("aaa", True, "g1f3"), ("bbb", False, "f1c4"),
     ]
