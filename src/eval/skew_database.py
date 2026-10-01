@@ -57,8 +57,9 @@ DEFAULT_SKEW: Final[Path] = Path("build/skew_positions.jsonl")
 DEFAULT_CANDIDATES: Final[Path] = Path("build/db_candidates.jsonl")
 DEFAULT_EVALUATED: Final[Path] = Path("build/db_evaluated.jsonl")
 
-SPEEDS: Final[Tuple[str, ...]] = ("Rated Blitz", "Rated Rapid")
-"""Lichess ``Event`` prefixes for the mined speeds; tournament games included."""
+SPEEDS: Final[Tuple[str, ...]] = ("Rated Blitz", "Rated Rapid", "Rated Classical")
+"""Lichess ``Event`` prefixes kept; tournament games included. Classical was not
+mined but is the slow end of the same population, about 1% of the volume."""
 
 RATING_BAND: Final[int] = 200
 CORE_BAND: Final[Tuple[int, int]] = (1100, 1700)
@@ -111,12 +112,33 @@ def _open_source(source: str) -> Iterator[str]:
     if source == "-":
         raw = sys.stdin.buffer
     elif source.startswith(("http://", "https://")):
-        raw = cast(BinaryIO, urllib.request.urlopen(source))  # an explicit, user-supplied URL
+        import ssl
+
+        import certifi
+
+        # The python.org build ships without system CA certificates; certifi's
+        # bundle is what requests already verifies against.
+        context = ssl.create_default_context(cafile=certifi.where())
+        raw = cast(BinaryIO, urllib.request.urlopen(source, context=context))
     else:
         raw = open(source, "rb")
     if source.endswith(".zst"):
         raw = cast(BinaryIO, pyzstd.ZstdFile(raw))
-    return iter(io.TextIOWrapper(raw, encoding="utf-8", errors="replace"))
+    return _until_truncated(io.TextIOWrapper(raw, encoding="utf-8", errors="replace"))
+
+
+def _until_truncated(lines: Iterator[str]) -> Iterator[str]:
+    """Lines until the input ends, including a .zst cut off mid-frame.
+
+    Lichess dumps decompress fine up to any cut point, which is how a prefix of
+    a month is read; the decompressor just raises at the end instead of
+    stopping. Whatever game was in flight at the cut is incomplete and is the
+    only one lost.
+    """
+    try:
+        yield from lines
+    except EOFError:
+        logger.info("scan: input ends mid-stream (a partial download); stopping there")
 
 
 def _skew_targets(path: Path) -> Dict[str, set[str]]:
@@ -193,7 +215,7 @@ def scan(
                         "mover": "white" if mover == chess.WHITE else "black",
                         "mover_elo": white if mover == chess.WHITE else black,
                         "opponent_elo": black if mover == chess.WHITE else white,
-                        "speed": "blitz" if "Blitz" in headers["Event"] else "rapid",
+                        "speed": headers["Event"].split()[1].lower(),
                         "result": headers.get("Result", "*"),
                         "moves": sans[ply:],
                     }) + "\n")

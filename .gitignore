@@ -31,3 +31,8 @@ build/games/
 maia2_models/
 build/skew_report*.txt
 build/skew_pipeline.done
+build/*.zst
+build/*.zst.part*
+build/db_*.log
+build/db_report.txt
+build/db_pipeline.done

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 
 import chess
 import pytest
@@ -104,3 +105,19 @@ def test_a_real_within_position_difference_survives_stratification() -> None:
     estimate = mh_difference(rows, lambda r: float(r["blunders"]), lambda r: float(r["opponent_moves"]))
     assert estimate == pytest.approx(0.1)
     assert "stratified" in report(rows)
+
+
+def test_a_dump_cut_off_mid_stream_reads_up_to_the_cut(tmp_path: Path) -> None:
+    """A partial download of a month is the whole point; it must not crash at the end."""
+    import pyzstd
+
+    from src.eval.skew_database import _open_source
+
+    # Compressed as a stream, block by block, the way the dumps are written.
+    compressor = pyzstd.ZstdCompressor()
+    payload = b"".join(compressor.compress(PGN.encode(), compressor.FLUSH_BLOCK) for _ in range(2000))
+    payload += compressor.flush()
+    cut = tmp_path / "partial.pgn.zst"
+    cut.write_bytes(payload[: len(payload) * 2 // 3])
+    games = list(iter_games(_open_source(str(cut))))
+    assert 0 < len(games) < 10_000, "some games, and fewer than the whole file"
