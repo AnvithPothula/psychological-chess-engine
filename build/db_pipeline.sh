@@ -18,20 +18,31 @@ REPORT=build/db_report.txt
 fail() { echo "FAILED: $*" | tee -a "$REPORT"; touch build/db_pipeline.done; exit 1; }
 : > "$REPORT"
 
-if [ ! -s "$OUT" ]; then
+piece_range() {  # sets s and e for piece $1
   step=$(( (BYTES + PARTS - 1) / PARTS ))
-  pids=()
+  s=$(( $1 * step )); e=$(( s + step - 1 )); [ "$e" -ge "$BYTES" ] && e=$(( BYTES - 1 ))
+}
+complete() {  # piece $1 is on disk at its full size
+  piece_range "$1"
+  [ -f "$OUT.part$1" ] && [ "$(stat -f %z "$OUT.part$1")" -eq $(( e - s + 1 )) ]
+}
+
+if [ ! -s "$OUT" ]; then
+  # Pieces already at full size are kept, so a rerun fetches only what is
+  # missing. The first run asked for all eight at once and got HTTP 429 on one
+  # after curl's default retries -- seconds apart -- ran out; a rate limit
+  # needs a wait of minutes, not seconds.
+  pids=(); pieces=()
   for i in $(seq 0 $((PARTS - 1))); do
-    s=$(( i * step )); e=$(( s + step - 1 )); [ "$e" -ge "$BYTES" ] && e=$(( BYTES - 1 ))
-    curl -sS --fail --retry 8 --retry-all-errors -r "$s-$e" -o "$OUT.part$i" "$URL" &
-    pids+=($!)
+    complete "$i" && continue
+    piece_range "$i"
+    curl -sS --fail --retry 10 --retry-delay 60 --retry-all-errors \
+      -r "$s-$e" -o "$OUT.part$i" "$URL" &
+    pids+=($!); pieces+=("$i")
   done
-  for i in "${!pids[@]}"; do wait "${pids[$i]}" || fail "download piece $i"; done
-  for i in $(seq 0 $((PARTS - 1))); do
-    s=$(( i * step )); e=$(( s + step - 1 )); [ "$e" -ge "$BYTES" ] && e=$(( BYTES - 1 ))
-    got=$(stat -f %z "$OUT.part$i")
-    [ "$got" -eq $(( e - s + 1 )) ] || fail "piece $i is $got bytes, expected $(( e - s + 1 ))"
-  done
+  echo "fetching pieces: ${pieces[*]:-none}" | tee -a "$REPORT"
+  for k in "${!pids[@]}"; do wait "${pids[$k]}" || fail "download piece ${pieces[$k]}"; done
+  for i in $(seq 0 $((PARTS - 1))); do complete "$i" || fail "piece $i is incomplete"; done
   cat $(for i in $(seq 0 $((PARTS - 1))); do echo "$OUT.part$i"; done) > "$OUT" || fail "joining pieces"
   rm -f "$OUT".part*
 fi
