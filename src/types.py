@@ -250,7 +250,16 @@ class SearchConfig:
     The premise has a known hole. A position with one safe reply is very often
     a recapture or a check evasion -- forced and instant -- rather than a hard
     only-move, so minimising the count steers toward trades as readily as
-    toward minefields."""
+    toward minefields.
+
+    Measured on 150 middlegame positions from August 2026 human games, at
+    omega=10 against maia3@1500: the move changed in 47, the opponent's mean
+    safe replies fell 4.03 -> 3.55 and positions with <= 2 rose 53 -> 70, at no
+    measurable cost in expected utility (+2.7cp, which can only be run-to-run
+    noise since omega can only give utility up). Forced positions -- check, a
+    lone legal move, or a best reply that recaptures -- rose 19 -> 30, and 9 of
+    the 47 changed moves created one: about a third of the narrowing is forced
+    rather than hard."""
 
     safe_reply_margin: int = 50
     """Tau_safe: a reply within this many centipawns of the best one is safe."""
