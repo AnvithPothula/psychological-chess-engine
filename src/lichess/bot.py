@@ -26,7 +26,7 @@ import logging
 import random
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Final, Iterator, Mapping, Optional, Protocol
 
@@ -140,6 +140,11 @@ class BotConfig:
     game_log: Optional[Path] = None
     """JSONL of each game's arm and outcome, keyed by game id. ``None`` disables it."""
 
+    narrow_path_weight: float = 0.0
+    """Omega for the quiet narrow-path term, applied to every move's search.
+    Off by default: the clock analysis shows humans blunder in such positions,
+    not that steering them there causes it."""
+
     allow_bots: bool = False
     """Accept BOT challengers at any rating and speed. For play, not data: their
     games are logged with ``opponent_bot`` and the analyzer leaves them out."""
@@ -237,6 +242,12 @@ class LichessBot:
     def stop(self) -> None:
         """Ask the event loop to exit. The in-flight game is left to finish."""
         self._stop.set()
+
+    def is_idle(self) -> bool:
+        """No game running and no challenge holding the slot."""
+        with self._lock:
+            running = self._game_thread is not None and self._game_thread.is_alive()
+            return self._reservation is None and not running
 
     def _after_response_error(self, context: str, exc: ResponseError, backoff: float) -> float:
         if exc.status_code == 429:
@@ -510,6 +521,8 @@ class LichessBot:
             state.get("binc", 0),
             is_white=session.my_color == chess.WHITE,
         )
+        if self.config.narrow_path_weight:
+            search_config = replace(search_config, narrow_path_weight=self.config.narrow_path_weight)
         try:
             result = self.searcher.search(session.board, search_config)
         except EvaluatorError as exc:
@@ -638,6 +651,10 @@ def main() -> int:
     parser.add_argument("--game-log", type=Path, default=Path("build/live_games.jsonl"))
     parser.add_argument("--allow-bots", action="store_true",
                         help="Also accept BOT challengers, at any rating and speed. Not data.")
+    parser.add_argument("--challenge-bots", action="store_true",
+                        help="Also challenge nearby-rated online bots, one at a time, minutes apart.")
+    parser.add_argument("--narrow-path-weight", type=float, default=0.0,
+                        help="Centipawns per safe reply in quiet positions (Milestone 19). Off at 0.")
     parser.add_argument("--arena", default=None,
                         help="Join this Arena on start. Only Arenas created with bots allowed "
                              "admit BOT accounts, and the token needs the tournament:write scope.")
@@ -665,6 +682,7 @@ def main() -> int:
         min_initial_seconds=args.min_clock, min_rating=args.min_rating,
         max_rating=args.max_rating, speeds=frozenset(args.speeds),
         control_share=args.control_share, game_log=args.game_log, allow_bots=args.allow_bots,
+        narrow_path_weight=args.narrow_path_weight,
     )
 
     with ExitStack() as stack:
@@ -694,6 +712,12 @@ def main() -> int:
         ):
             logger.error("lichess: could not join arena %s; see the warning above", args.arena)
             return 1
+        if args.challenge_bots:
+            from src.lichess.challenger import Challenger
+
+            threading.Thread(
+                target=Challenger(bot, client).run, name="lichess-challenger", daemon=True
+            ).start()
         try:
             bot.run()
         except KeyboardInterrupt:
