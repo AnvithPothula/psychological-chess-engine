@@ -604,3 +604,15 @@ def test_the_narrow_path_term_is_off_by_default_and_only_reorders_when_weighted(
     assert selection_score(easy, SearchConfig()) > selection_score(narrow, SearchConfig())
     weighted = SearchConfig(narrow_path_weight=10.0)
     assert selection_score(narrow, weighted) > selection_score(easy, weighted), "70cp of narrowness"
+
+
+def test_a_forcing_move_earns_no_narrow_path_credit() -> None:
+    """Checks and captures leave forced replies that humans play in a second."""
+    from dataclasses import replace
+
+    board = chess.Board("4k3/8/8/8/8/8/3q4/R3K3 w - - 0 1")
+    evaluator = ScriptedEvaluator({"a1a8": 50, "a1a2": 0}, {}, default_cp=0)
+    searcher = AdversarialSearcher(evaluator, ScriptedHumanModel({}))
+    settings = replace(SearchConfig(max_candidates=2, root_margin=500), narrow_path_weight=10.0)
+    check, _ = searcher._score_candidate(board, chess.Move.from_uci("a1a8"), chess.WHITE, settings)
+    assert check.safe_replies == settings.safe_reply_cap, "a check is scored as wide open"

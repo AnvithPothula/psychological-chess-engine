@@ -259,7 +259,18 @@ class SearchConfig:
     noise since omega can only give utility up). Forced positions -- check, a
     lone legal move, or a best reply that recaptures -- rose 19 -> 30, and 9 of
     the 47 changed moves created one: about a third of the narrowing is forced
-    rather than hard."""
+    rather than hard.
+
+    So only quiet positions count: after a check or a capture the opponent's
+    position is scored as wide open. ``src.eval.clock_analysis`` measured why,
+    on 30,000 positions (one per game) from August 2026 rated blitz and rapid
+    between 1000-2000 humans. In quiet positions, two or fewer safe replies
+    against five or more: blitz think time 5.96s -> 7.13s and blunder rate
+    3.1% -> 22.1%; rapid 11.5s -> 13.4s and 3.6% -> 22.1%. After a check or a
+    capture, narrow positions were played *faster* (-0.5s blitz, -2.1s rapid).
+    The clock effect is real but a second or two; the blunder effect is the
+    lever. Observational: it shows humans err in such positions, not that
+    steering them there causes it, and beta steering measured flat on Maia."""
 
     safe_reply_margin: int = 50
     """Tau_safe: a reply within this many centipawns of the best one is safe."""

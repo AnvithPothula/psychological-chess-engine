@@ -195,6 +195,16 @@ def safe_reply_count(
     ranked = _rank_mover_relative(
         evaluator.analyse_root_moves(board, depth=depth, multipv=min(cap, legal)), board.turn
     )
+    return count_safe(ranked, margin)
+
+
+def count_safe(ranked: Sequence[Tuple[chess.Move, int]], margin: int) -> int:
+    """Moves in a best-first, mover-relative ranking within ``margin`` of the best.
+
+    Shared by the search and by the clock analysis, so the quantity the engine
+    steers by is the quantity measured against human think time."""
+    if not ranked:
+        return 0
     best = ranked[0][1]
     return sum(1 for _move, centipawns in ranked if best - centipawns <= margin)
 
@@ -563,6 +573,7 @@ class AdversarialSearcher:
 
         Returns the candidate's telemetry and the number of leaves evaluated.
         """
+        captures = board.is_capture(move)
         board.push(move)
         try:
             terminal = self._terminal_bot_score(board, bot_color)
@@ -595,10 +606,15 @@ class AdversarialSearcher:
 
             safe_replies = 0
             if settings.narrow_path_weight:
-                safe_replies = safe_reply_count(
-                    self.evaluator, board,
-                    margin=settings.safe_reply_margin, cap=settings.safe_reply_cap,
-                    depth=settings.beta_depth,
+                # A check or a capture leaves a forced reply, which humans play
+                # fast: scored as wide open, so only quiet narrow paths earn the
+                # term. Measured in clock_analysis.
+                safe_replies = settings.safe_reply_cap if board.is_check() or captures else (
+                    safe_reply_count(
+                        self.evaluator, board,
+                        margin=settings.safe_reply_margin, cap=settings.safe_reply_cap,
+                        depth=settings.beta_depth,
+                    )
                 )
 
             utility = 0.0

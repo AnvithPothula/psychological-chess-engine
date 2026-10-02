@@ -49,7 +49,7 @@ import chess
 
 from src.eval.live_analyzer import GameStats, read_jsonl, score_game
 
-__all__ = ["iter_games", "scan", "mh_difference", "report", "main"]
+__all__ = ["iter_games", "iter_raw_games", "scan", "mh_difference", "report", "main"]
 
 logger = logging.getLogger(__name__)
 
@@ -73,24 +73,30 @@ _RESULTS = frozenset({"1-0", "0-1", "1/2-1/2", "*"})
 # -- reading the dump ---------------------------------------------------------
 
 
-def iter_games(lines: Iterator[str]) -> Iterator[Tuple[Dict[str, str], List[str]]]:
-    """Headers and SAN moves per game. Comments, clocks, evals and glyphs removed."""
+def iter_raw_games(lines: Iterator[str]) -> Iterator[Tuple[Dict[str, str], str]]:
+    """Headers and the raw movetext per game, comments and clocks intact."""
     headers: Dict[str, str] = {}
     movetext: List[str] = []
     for line in lines:
         if line.startswith("["):
             if movetext:  # a game without a trailing blank line
-                yield headers, _sans(" ".join(movetext))
+                yield headers, " ".join(movetext)
                 headers, movetext = {}, []
             key, _, value = line[1:].rstrip().rstrip("]").partition(" ")
             headers[key] = value.strip('"')
         elif line.strip():
             movetext.append(line.strip())
         elif movetext:
-            yield headers, _sans(" ".join(movetext))
+            yield headers, " ".join(movetext)
             headers, movetext = {}, []
     if movetext:
-        yield headers, _sans(" ".join(movetext))
+        yield headers, " ".join(movetext)
+
+
+def iter_games(lines: Iterator[str]) -> Iterator[Tuple[Dict[str, str], List[str]]]:
+    """Headers and SAN moves per game. Comments, clocks, evals and glyphs removed."""
+    for headers, movetext in iter_raw_games(lines):
+        yield headers, _sans(movetext)
 
 
 def _sans(movetext: str) -> List[str]:
