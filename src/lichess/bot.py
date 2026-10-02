@@ -290,8 +290,12 @@ class LichessBot:
         who = str(challenger.get("name", "?")) if isinstance(challenger, Mapping) else "?"
         if not challenge_id:
             return
-        if challenge.get("direction") == "out":
-            return  # One of ours, not an invitation.
+        challenger_id = str(challenger.get("id", "")).lower() if isinstance(challenger, Mapping) else ""
+        if challenge.get("direction") == "out" or challenger_id == self.bot_id:
+            # One of ours, not an invitation. The event stream echoes outbound
+            # challenges without a direction field; declining one would cancel
+            # the challenge the challenger just sent.
+            return
 
         reason = self._decline_reason(challenge)
         if reason is None and not self._reserve(challenge_id):

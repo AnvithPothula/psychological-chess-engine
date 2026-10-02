@@ -553,3 +553,13 @@ def test_a_stream_closed_on_open_backs_off_instead_of_reconnecting_every_two_sec
     bot._stop = clock  # type: ignore[assignment]
     bot.run()
     assert clock.waits == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+
+
+def test_our_own_outbound_challenge_echoed_by_the_stream_is_left_alone() -> None:
+    """Seen live: the bridge declined its own challenge; only a 404 saved it."""
+    bots = FakeBots()
+    bot, _ = build_bot(bots)
+    echo = dict(challenge_event("ours")["challenge"])
+    echo["challenger"] = {"id": BOT_ID, "name": BOT_ID, "rating": 1500, "title": "BOT"}
+    bot._handle_challenge(echo)
+    assert bots.declined == [] and bots.accepted == []
