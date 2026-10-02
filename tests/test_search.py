@@ -562,3 +562,45 @@ def test_a_move_below_the_hard_bottom_is_never_a_gambit() -> None:
     )
     assert lost.is_safe is False and lost.is_gambit is False
 
+
+
+class _TopK:
+    """Serves only the ``multipv`` best lines, as Stockfish does."""
+
+    def __init__(self, scores: Mapping[str, int]) -> None:
+        self.scores = scores
+        self.asked: List[Optional[int]] = []
+
+    def analyse_root_moves(
+        self, board: chess.Board, *, depth: int = 12, multipv: Optional[int] = None
+    ) -> Dict[chess.Move, EngineEval]:
+        self.asked.append(multipv)
+        ranked = sorted(board.legal_moves, key=lambda m: -self.scores.get(m.uci(), -300))
+        return {m: _eval(self.scores.get(m.uci(), -300)) for m in ranked[:multipv]}
+
+
+def test_safe_replies_count_near_the_top_and_cap_with_one_bounded_scan() -> None:
+    from src.engine.search import safe_reply_count
+
+    scores = {"e2e4": 30, "d2d4": 20, "g1f3": -25, "c2c4": -100}
+    board = chess.Board()
+    scan = _TopK(scores)
+    assert safe_reply_count(scan, board, margin=50, cap=8, depth=6) == 2, "g1f3 is 55cp off"
+    assert scan.asked == [8], "one scan, bounded at the cap rather than all 20 legal moves"
+    assert safe_reply_count(_TopK(scores), board, margin=60, cap=2, depth=6) == 2, "capped"
+    assert safe_reply_count(_TopK(scores), chess.Board("7k/8/8/8/8/8/8/6RK b - - 0 1"),
+                            margin=50, cap=8, depth=6) >= 1
+
+
+def test_the_narrow_path_term_is_off_by_default_and_only_reorders_when_weighted() -> None:
+    def stats(uci: str, utility: float, safe_replies: int) -> CandidateStats:
+        return CandidateStats(
+            move=chess.Move.from_uci(uci), expected_utility=utility, worst_case=0,
+            objective_score=int(utility), blunder_trap_delta=0.0, is_safe=True,
+            top_replies=(), safe_replies=safe_replies,
+        )
+
+    easy, narrow = stats("e2e4", 100.0, 8), stats("d2d4", 80.0, 1)
+    assert selection_score(easy, SearchConfig()) > selection_score(narrow, SearchConfig())
+    weighted = SearchConfig(narrow_path_weight=10.0)
+    assert selection_score(narrow, weighted) > selection_score(easy, weighted), "70cp of narrowness"

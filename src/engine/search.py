@@ -175,6 +175,30 @@ def blunder_potential(
     return BlunderScan((legal_count - sound) / legal_count, frozenset(blunders), legal_count)
 
 
+def safe_reply_count(
+    evaluator: PositionEvaluator, board: chess.Board, *, margin: int, cap: int, depth: int
+) -> int:
+    """Replies within ``margin`` of the side to move's best, capped at ``cap``.
+
+    One MultiPV scan for the top ``cap`` lines; a count of ``cap`` reads as
+    "``cap`` or more". It is not exact -- MultiPV=k scores differently from a
+    full scan, the same effect that sank truncated beta -- but measured on 150
+    middlegame positions from August 2026 human games, against a depth-10 full
+    scan, it is about as good as the full scan at the same depth and half the
+    cost: exact on 57 vs 69, mean error 1.29 vs 1.10 replies, the narrow/not
+    call (<= 2) right on 116 vs 118, 13ms vs 27ms. The count is noisy at depth 6
+    either way; the bound adds little to that.
+    """
+    legal = board.legal_moves.count()
+    if legal == 0:
+        return 0
+    ranked = _rank_mover_relative(
+        evaluator.analyse_root_moves(board, depth=depth, multipv=min(cap, legal)), board.turn
+    )
+    best = ranked[0][1]
+    return sum(1 for _move, centipawns in ranked if best - centipawns <= margin)
+
+
 def gambit_floor(
     utility: float, objective_score: int, settings: SearchConfig
 ) -> Tuple[int, bool]:
@@ -214,6 +238,7 @@ def selection_score(candidate: CandidateStats, settings: SearchConfig) -> float:
         candidate.expected_utility
         + settings.beta_weight * candidate.beta
         + settings.blunder_mass_weight * candidate.blunder_mass
+        - settings.narrow_path_weight * candidate.safe_replies
     )
 
 
@@ -568,6 +593,14 @@ class AdversarialSearcher:
                     depth=settings.beta_depth,
                 )
 
+            safe_replies = 0
+            if settings.narrow_path_weight:
+                safe_replies = safe_reply_count(
+                    self.evaluator, board,
+                    margin=settings.safe_reply_margin, cap=settings.safe_reply_cap,
+                    depth=settings.beta_depth,
+                )
+
             utility = 0.0
             worst = engine_config.MATE_SCORE_CP
             blunder_mass = 0.0
@@ -590,7 +623,7 @@ class AdversarialSearcher:
         return (
             self._build_stats(
                 move, utility, worst, objective_score, tuple(predicted[:_TOP_REPLIES_REPORTED]),
-                settings, scan.beta, blunder_mass,
+                settings, scan.beta, blunder_mass, safe_replies,
             ),
             len(predicted) + 1,  # + the objective-floor evaluation
         )
@@ -605,6 +638,7 @@ class AdversarialSearcher:
         settings: SearchConfig,
         beta: float = 0.0,
         blunder_mass: float = 0.0,
+        safe_replies: int = 0,
     ) -> CandidateStats:
         floor, _relaxed = gambit_floor(utility, objective_score, settings)
         # Both halves are still required. The reply floor alone can be blinded
@@ -626,6 +660,7 @@ class AdversarialSearcher:
             floor_used=floor,
             beta=beta,
             blunder_mass=blunder_mass,
+            safe_replies=safe_replies,
             is_safe=clears,
             top_replies=replies,
         )

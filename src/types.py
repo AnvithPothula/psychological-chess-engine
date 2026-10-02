@@ -241,9 +241,32 @@ class SearchConfig:
     pre-Milestone-10 ranking exactly, and zero is the honest default until that
     experiment exists."""
 
+    narrow_path_weight: float = 0.0
+    """Omega: centipawns of selection score given up per safe reply the opponent
+    has (Milestone 19). Off by default, and unmeasured where it matters: the
+    arena's opponent has no clock, so it can show the engine choosing narrower
+    positions but not whether a human spends longer in them.
+
+    The premise has a known hole. A position with one safe reply is very often
+    a recapture or a check evasion -- forced and instant -- rather than a hard
+    only-move, so minimising the count steers toward trades as readily as
+    toward minefields."""
+
+    safe_reply_margin: int = 50
+    """Tau_safe: a reply within this many centipawns of the best one is safe."""
+
+    safe_reply_cap: int = 8
+    """Replies the scan asks for. A count that reaches it means "this many or
+    more", which for a narrow-path term is all that matters: 8 safe replies and
+    25 are both an easy position. Bounding it at the top is what makes one
+    MultiPV-8 scan enough -- unlike beta, which needs the tail."""
+
     def __post_init__(self) -> None:
         if self.safety_threshold < 0:
             raise ValueError("safety_threshold must be non-negative")
+        if self.narrow_path_weight < 0.0 or self.safe_reply_margin < 0 or self.safe_reply_cap < 1:
+            raise ValueError("narrow_path_weight and safe_reply_margin must be non-negative, "
+                             "safe_reply_cap >= 1")
         if self.root_margin < 0:
             raise ValueError("root_margin must be non-negative")
         if not 0.0 <= self.min_reply_probability < 1.0:
@@ -324,6 +347,10 @@ class CandidateStats:
 
     blunder_mass: float = 0.0
     """Opponent-model probability mass sitting on blundering replies."""
+
+    safe_replies: int = 0
+    """Opponent replies within ``safe_reply_margin`` of their best, capped at
+    ``safe_reply_cap``. Zero when the narrow-path term is off."""
 
     is_safe: bool = True
     """``min(worst_case, objective_score) >= -safety_threshold``. Both halves are
