@@ -106,3 +106,23 @@ def test_provisional_ratings_are_ignored_for_us_and_for_them() -> None:
     challenger, _, _ = _challenger(client)
     assert challenger._own_rating("blitz") == 1500, "the provisional 3000 is not a rating"
     assert challenger.pick("blitz") == "near", "not the provisional bot, not the 3000"
+
+
+def test_the_daily_bot_game_limit_pauses_us_only_when_it_is_ours() -> None:
+    """Lichess caps bots at 100 games a day against bots; seen live on a target."""
+    import json as _json
+
+    import requests
+    from berserk.exceptions import ResponseError
+
+    def limit_error(name: str) -> ResponseError:
+        response = requests.Response()
+        response.status_code = 400
+        response._content = _json.dumps({
+            "error": f"{name} played 100 games against other bots today, please wait.",
+            "ratelimit": {"key": "bot.vsBot.day", "seconds": 18899}}).encode()
+        return ResponseError(response)
+
+    challenger, bot, _ = _challenger(FakeClient([]))
+    assert challenger._own_daily_limit(limit_error("Trainer-Bot")) is None, "theirs: just move on"
+    assert challenger._own_daily_limit(limit_error(BOT_ID)) == 18899.0, "ours: wait it out"

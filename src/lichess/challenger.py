@@ -107,6 +107,11 @@ class Challenger:
                     logger.warning("challenger: rate limited, pausing %.0fs", RATE_LIMIT_PAUSE)
                     self.bot._stop.wait(RATE_LIMIT_PAUSE)
                     continue
+                wait = self._own_daily_limit(exc)
+                if wait is not None:
+                    logger.warning("challenger: our daily bot-game limit is used up, pausing %.0fs", wait)
+                    self.bot._stop.wait(wait)
+                    continue
                 logger.warning("challenger: HTTP %s (%s)", exc.status_code, exc)
             except NETWORK_ERRORS as exc:
                 logger.warning("challenger: network error (%s)", exc)
@@ -192,6 +197,28 @@ class Challenger:
             if self.bot._stop.wait(1.0):
                 return False
         return self.bot._reservation != key
+
+    def _own_daily_limit(self, exc: ResponseError) -> Optional[float]:
+        """Seconds to wait if *we* hit Lichess's bot-vs-bot daily limit, else None.
+
+        Lichess caps a bot at 100 games a day against other bots and answers a
+        challenge past it with HTTP 400, naming whichever side is over and how
+        long until it resets. When that is the target, the target is already
+        on cooldown; when it is us, every further challenge fails the same way.
+        """
+        if exc.status_code != 400 or exc.response is None:
+            return None
+        try:
+            body = exc.response.json()
+        except ValueError:
+            return None
+        limit = body.get("ratelimit") if isinstance(body, Mapping) else None
+        if not isinstance(limit, Mapping) or limit.get("key") != "bot.vsBot.day":
+            return None
+        named = str(body.get("error", "")).split(" played ", 1)[0].strip().lower()
+        if named != self.bot.bot_id:
+            return None
+        return float(limit.get("seconds", RATE_LIMIT_PAUSE))
 
     def _cancel(self, challenge_id: str) -> None:
         try:
