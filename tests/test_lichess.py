@@ -77,6 +77,11 @@ class FakeBots:
         self.resigned: List[str] = []
         self.event_stream_calls = 0
         self.raise_on_event_stream: List[Optional[BaseException]] = []
+        self.reconnect_states: Dict[str, Sequence[Any]] = {}
+        """What a second connection to a game's stream yields. An exception in
+        either script is raised where it sits, as a dropped connection would be."""
+        self.game_stream_calls: Dict[str, int] = {}
+        self.raise_on_move: List[BaseException] = []
 
     def stream_incoming_events(self) -> Iterator[Mapping[str, Any]]:
         self.event_stream_calls += 1
@@ -87,9 +92,16 @@ class FakeBots:
         yield from self.events
 
     def stream_game_state(self, game_id: str) -> Iterator[Mapping[str, Any]]:
-        yield from self.game_states.get(game_id, [])
+        calls = self.game_stream_calls[game_id] = self.game_stream_calls.get(game_id, 0) + 1
+        script = self.game_states.get(game_id, []) if calls == 1 else self.reconnect_states.get(game_id, [])
+        for item in script:
+            if isinstance(item, BaseException):
+                raise item
+            yield item
 
     def make_move(self, game_id: str, move: str) -> None:
+        if self.raise_on_move:
+            raise self.raise_on_move.pop(0)
         self.moves.append((game_id, move))
 
     def accept_challenge(self, challenge_id: str) -> None:
@@ -148,7 +160,8 @@ def challenge_event(
 def build_bot(bots: FakeBots, maia: Optional[StubMaia] = None) -> Tuple[LichessBot, StubMaia]:
     model = maia if maia is not None else StubMaia()
     searcher = AdversarialSearcher(ScriptedEvaluator({}, {}, default_cp=0), model)
-    bot = LichessBot(FakeClient(bots), searcher, model, bot_id=BOT_ID)
+    bot = LichessBot(FakeClient(bots), searcher, model, bot_id=BOT_ID, config=BotConfig(
+        reconnect_backoff_seconds=0.001, max_reconnect_backoff_seconds=0.001))
     return bot, model
 
 
@@ -538,6 +551,7 @@ def test_a_stream_closed_on_open_backs_off_instead_of_reconnecting_every_two_sec
     """Seen live: a second bot process made the server close the stream on open,
     and the bridge reopened it every 2s because a clean close reset the backoff."""
     bot, _ = build_bot(FakeBots(events=[]))
+    bot.config = BotConfig()
 
     class Clock:
         waits: List[float] = []
@@ -563,3 +577,56 @@ def test_our_own_outbound_challenge_echoed_by_the_stream_is_left_alone() -> None
     echo["challenger"] = {"id": BOT_ID, "name": BOT_ID, "rating": 1500, "title": "BOT"}
     bot._handle_challenge(echo)
     assert bots.declined == [] and bots.accepted == []
+
+
+
+# --- the four live losses on time ---------------------------------------------
+
+
+def _dropped() -> BaseException:
+    from berserk.exceptions import ApiError
+
+    return ApiError(requests.ConnectionError("Remote end closed connection without response"))
+
+
+def test_a_move_whose_connection_drops_is_retried_not_fatal() -> None:
+    """EPngOS1B and aevBdKIp: berserk wraps the drop in ApiError, which killed the game thread."""
+    bots = FakeBots()
+    bots.raise_on_move = [_dropped()]
+    bot, _ = build_bot(bots)
+    bot.config = BotConfig(max_reconnect_backoff_seconds=0.001)
+    assert bot._submit_move("g1", "e2e4")
+    assert bots.moves == [("g1", "e2e4")]
+
+
+def test_a_dropped_game_stream_is_rejoined_and_the_game_finished() -> None:
+    finished = _game_state("e2e4 e7e5", status="resign", winner="white")
+    bots = FakeBots(game_states={"g1": [_game_full(), _dropped()]})
+    bots.reconnect_states = {"g1": [_game_full("e2e4 e7e5"), finished]}
+    bot, _ = build_bot(bots)
+    starts: List[str] = []
+    original = bot._start_session
+    bot._start_session = lambda gid, ev: (starts.append(gid), original(gid, ev))[1]  # type: ignore[method-assign]
+    bot.play_game("g1")
+    assert bots.game_stream_calls["g1"] == 2, "rejoined after the drop"
+    assert starts == ["g1"], "one session, one book draw, one log line"
+
+
+def test_a_claimable_repetition_is_played_on_not_waited_out() -> None:
+    """fUeLxEJr and AqpmpSQx: the next move could repeat a third time, the bridge
+    called that terminal, and the clock ran out while Lichess waited for a move."""
+    moves = "g1f3 g8f6 f3g1 f6g8 g1f3 g8f6 f3g1"  # black can claim with ...Ng8; nothing has repeated three times
+    full = {**_game_full(moves), "white": {"id": "human", "name": "human", "rating": 1400},
+            "black": {"id": BOT_ID, "name": BOT_ID, "rating": 2000}}
+    bots = FakeBots(game_states={"g1": [full]})
+    bot, _ = build_bot(bots)
+    bot.play_game("g1")
+    assert bots.moves, "the bot moved"
+
+
+def test_a_position_the_search_declines_gets_a_move_not_a_resignation() -> None:
+    moves = "g1f3 g8f6 f3g1 f6g8 g1f3 g8f6 f3g1 f6g8"  # the start position, a third time
+    bots = FakeBots(game_states={"g1": [_game_full(moves)]})
+    bot, _ = build_bot(bots)
+    bot.play_game("g1")
+    assert bots.moves and not bots.resigned

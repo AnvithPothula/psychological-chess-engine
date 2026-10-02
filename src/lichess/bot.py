@@ -32,7 +32,7 @@ from typing import Any, Callable, Dict, Final, Iterator, Mapping, Optional, Prot
 
 import chess
 import requests
-from berserk.exceptions import ResponseError
+from berserk.exceptions import ApiError, ResponseError
 from berserk.types.challenges import ChallengeDeclineReason
 
 from src import config as engine_config
@@ -40,7 +40,7 @@ from src.engine import EvaluatorError
 from src.engine.book import OpeningBook
 from src.engine.bot_factory import SKEW, STANDARD, build_book
 from src.engine.policy_generator import load_proposer
-from src.engine.search import AdversarialSearcher
+from src.engine.search import AdversarialSearcher, TerminalPositionError
 from src.lichess.time_manager import TimeManager
 from src.types import MoveSource
 
@@ -65,7 +65,15 @@ DEFAULT_MIN_INITIAL_SECONDS: Final[float] = 60.0
 DEFAULT_OPPONENT_RATING: Final[int] = 1500
 """Used when the opponent has no rating: Lichess AI, or a provisional new account."""
 
-NETWORK_ERRORS: Final[tuple[type[BaseException], ...]] = (requests.RequestException, OSError)
+NETWORK_ERRORS: Final[tuple[type[BaseException], ...]] = (requests.RequestException, OSError, ApiError)
+"""ApiError is how berserk wraps a dropped connection. Without it here, a server
+closing an idle keep-alive connection as a move was submitted killed the game
+thread, and the bot lost two games on time without moving again. Every handler
+catches ResponseError -- an ApiError subclass -- first."""
+
+GAME_STREAM_ATTEMPTS: Final[int] = 8
+"""Reconnects to one game's stream before giving it up. The game goes on on
+the server whether or not we are listening."""
 
 SPEEDS: Final[tuple[str, ...]] = (
     "ultraBullet", "bullet", "blitz", "rapid", "classical", "correspondence",
@@ -405,29 +413,45 @@ class LichessBot:
         """
         logger.info("game %s: joining", game_id)
         session: Optional[GameSession] = None
+        backoff = self.config.reconnect_backoff_seconds
         try:
-            for event in self.client.bots.stream_game_state(game_id):
-                if self._stop.is_set():
-                    logger.info("game %s: shutting down, leaving the game", game_id)
+            for attempt in range(1, GAME_STREAM_ATTEMPTS + 1):
+                try:
+                    for event in self.client.bots.stream_game_state(game_id):
+                        if self._stop.is_set():
+                            logger.info("game %s: shutting down, leaving the game", game_id)
+                            return
+                        kind = event.get("type")
+                        if kind == "gameFull":
+                            # A reconnect resends gameFull; the session, its
+                            # book draw and its log line belong to the first.
+                            if session is None:
+                                session = self._start_session(game_id, event)
+                            state = event.get("state")
+                            if isinstance(state, Mapping) and not self._advance(session, state):
+                                return
+                        elif kind == "gameState":
+                            if session is None:
+                                logger.warning("game %s: gameState before gameFull, ignoring", game_id)
+                                continue
+                            if not self._advance(session, event):
+                                return
+                        else:
+                            logger.debug("game %s: ignoring %s event", game_id, kind)
+                    logger.warning("game %s: stream ended before the game did", game_id)
+                except ResponseError as exc:
+                    if 400 <= exc.status_code < 500 and exc.status_code != 429:
+                        logger.error("game %s: stream refused with HTTP %s (%s)", game_id, exc.status_code, exc)
+                        return
+                    logger.warning("game %s: stream failed with HTTP %s", game_id, exc.status_code)
+                except NETWORK_ERRORS as exc:
+                    logger.warning("game %s: stream dropped (%s)", game_id, exc)
+                logger.info("game %s: reconnecting in %.0fs (%d/%d)",
+                            game_id, backoff, attempt, GAME_STREAM_ATTEMPTS)
+                if self._stop.wait(backoff):
                     return
-                kind = event.get("type")
-                if kind == "gameFull":
-                    session = self._start_session(game_id, event)
-                    state = event.get("state")
-                    if isinstance(state, Mapping) and not self._advance(session, state):
-                        return
-                elif kind == "gameState":
-                    if session is None:
-                        logger.warning("game %s: gameState before gameFull, ignoring", game_id)
-                        continue
-                    if not self._advance(session, event):
-                        return
-                else:
-                    logger.debug("game %s: ignoring %s event", game_id, kind)
-        except ResponseError as exc:
-            logger.error("game %s: stream failed with HTTP %s (%s)", game_id, exc.status_code, exc)
-        except NETWORK_ERRORS as exc:
-            logger.error("game %s: stream dropped (%s)", game_id, exc)
+                backoff = min(backoff * 2, self.config.max_reconnect_backoff_seconds)
+            logger.error("game %s: gave up after %d reconnects", game_id, GAME_STREAM_ATTEMPTS)
         finally:
             logger.info("game %s: loop finished", game_id)
 
@@ -512,7 +536,10 @@ class LichessBot:
                 "plies": session.moves_played, "front_book_moves": session.front_book_moves,
             })
             return False
-        if session.board.is_game_over(claim_draw=True):
+        # Over by the rules, not merely claimable: python-chess calls a draw
+        # claimable when the *next* move would repeat a third time, which
+        # Lichess does not end. Waiting there lost two games on time.
+        if session.board.is_game_over():
             logger.info("game %s: position is terminal, waiting for the server", session.game_id)
             return True
         if session.board.turn != session.my_color:
@@ -529,6 +556,15 @@ class LichessBot:
             search_config = replace(search_config, narrow_path_weight=self.config.narrow_path_weight)
         try:
             result = self.searcher.search(session.board, search_config)
+        except TerminalPositionError:
+            # The searcher scores a repetition or fifty-move position as a draw
+            # and declines to search it, but the server has not ended the game.
+            # Any legal move beats the clock running out; Stockfish's best is
+            # the least bad. Caught before EvaluatorError, which would resign.
+            move = self._fallback_move(session.board)
+            logger.warning("game %s: search declined a drawn position, playing %s",
+                           session.game_id, session.board.san(move))
+            return self._submit_move(session.game_id, move.uci())
         except EvaluatorError as exc:
             logger.error("game %s: search failed (%s), resigning", session.game_id, exc)
             self._call_api("resign", lambda: self.client.bots.resign_game(session.game_id))
@@ -545,6 +581,15 @@ class LichessBot:
             logger.error("game %s: could not submit %s, abandoning the game", session.game_id, san)
             return False
         return True
+
+    def _fallback_move(self, board: chess.Board) -> chess.Move:
+        try:
+            best = self.searcher.evaluator.analyse_root_moves(board, depth=8, multipv=1)
+            if best:
+                return next(iter(best))
+        except EvaluatorError:
+            pass
+        return next(iter(board.legal_moves))
 
     def _sync_board(self, session: GameSession, moves_text: str) -> None:
         """Rebuild the position from the authoritative move list.
