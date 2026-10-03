@@ -630,3 +630,24 @@ def test_a_position_the_search_declines_gets_a_move_not_a_resignation() -> None:
     bot, _ = build_bot(bots)
     bot.play_game("g1")
     assert bots.moves and not bots.resigned
+
+
+
+def test_every_request_gets_a_read_timeout_so_a_dead_stream_cannot_hang() -> None:
+    """tq8SjaTx and wczLemzW: the game stream went silent for ten minutes and the bot flagged."""
+    import pytest
+
+    from src.lichess.bot import READ_TIMEOUT_SECONDS, TimedTokenSession
+
+    seen: Dict[str, Any] = {}
+
+    def capture(self: Any, method: str, url: str, *args: Any, **kwargs: Any) -> None:
+        seen.update(kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(requests.Session, "request", capture)
+        TimedTokenSession("token").request("GET", "https://lichess.org/api/bot/game/stream/x", stream=True)
+        assert seen["timeout"][1] == READ_TIMEOUT_SECONDS
+        TimedTokenSession("token").request("GET", "https://x", timeout=5)
+        assert seen["timeout"] == 5, "an explicit timeout wins"
+    assert READ_TIMEOUT_SECONDS > 2 * 7.0, "must outlast keep-alives"

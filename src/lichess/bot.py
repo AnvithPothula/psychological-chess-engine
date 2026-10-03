@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Final, Iterator, Mapping, Optional, Protocol
 
 import chess
+import berserk
 import requests
 from berserk.exceptions import ApiError, ResponseError
 from berserk.types.challenges import ChallengeDeclineReason
@@ -70,6 +71,25 @@ NETWORK_ERRORS: Final[tuple[type[BaseException], ...]] = (requests.RequestExcept
 closing an idle keep-alive connection as a move was submitted killed the game
 thread, and the bot lost two games on time without moving again. Every handler
 catches ResponseError -- an ApiError subclass -- first."""
+
+READ_TIMEOUT_SECONDS: Final[float] = 20.0
+"""Silence on a connection longer than this means it is dead. Lichess streams
+send a keep-alive line every 7.0s (measured), so 20s is three missed. Without a
+timeout a half-open connection hangs forever: twice the game stream went quiet
+for ten minutes after the bot's move, the opponent's reply never arrived, and
+the bot lost on time with its clock untouched."""
+
+CONNECT_TIMEOUT_SECONDS: Final[float] = 10.0
+
+
+class TimedTokenSession(berserk.TokenSession):
+    """berserk's session, with a connect and read timeout on every request that
+    does not set its own. berserk sets none."""
+
+    def request(self, method: Any, url: Any, *args: Any, **kwargs: Any) -> requests.Response:
+        kwargs.setdefault("timeout", (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS))
+        return super().request(method, url, *args, **kwargs)
+
 
 GAME_STREAM_ATTEMPTS: Final[int] = 8
 """Reconnects to one game's stream before giving it up. The game goes on on
@@ -680,8 +700,6 @@ def main() -> int:
     import argparse
     from contextlib import ExitStack
 
-    import berserk
-
     from src.engine import Maia3Evaluator, StockfishEvaluator
 
     parser = argparse.ArgumentParser(prog="python -m src.lichess.bot", description="Lichess bot bridge.")
@@ -724,7 +742,7 @@ def main() -> int:
         logger.error("%s", exc)
         return 1
 
-    session = berserk.TokenSession(token)
+    session = TimedTokenSession(token)
     client = berserk.Client(session=session)
     args.game_log.parent.mkdir(parents=True, exist_ok=True)
     config = BotConfig(
