@@ -281,9 +281,25 @@ class SearchConfig:
     25 are both an easy position. Bounding it at the top is what makes one
     MultiPV-8 scan enough -- unlike beta, which needs the tail."""
 
+    winning_threshold: int = 300
+    """Once the best candidate is objectively this far ahead, keep it there.
+
+    The safety floor is absolute -- a move may not drop below -180cp -- so a
+    position at +700 could be traded down to +50 whenever the opponent model
+    predicted a blunder. Against 2000-2200 engines that happened 12 times in 45
+    games, turning four won games into draws: the moves were flagged TRAP with
+    expected utility up to +7584cp, betting on errors engines do not make. A
+    won position wins without the bet."""
+
+    winning_margin: int = 200
+    """When winning, candidates must also stay within this of the best one, so a
+    forced mate keeps the mate instead of being traded for a likely one."""
+
     def __post_init__(self) -> None:
         if self.safety_threshold < 0:
             raise ValueError("safety_threshold must be non-negative")
+        if self.winning_threshold < 0 or self.winning_margin < 0:
+            raise ValueError("winning_threshold and winning_margin must be non-negative")
         if self.narrow_path_weight < 0.0 or self.safe_reply_margin < 0 or self.safe_reply_cap < 1:
             raise ValueError("narrow_path_weight and safe_reply_margin must be non-negative, "
                              "safe_reply_cap >= 1")

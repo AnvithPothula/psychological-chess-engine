@@ -252,6 +252,25 @@ def selection_score(candidate: CandidateStats, settings: SearchConfig) -> float:
     )
 
 
+def keep_winning(safe: Sequence[CandidateStats], settings: SearchConfig) -> List[CandidateStats]:
+    """Sound candidates, narrowed to those that keep a won position won.
+
+    Below ``winning_threshold`` this returns ``safe`` unchanged: the trap
+    search is for positions still to be decided. Above it, only moves within
+    ``winning_margin`` of the best objective score and still above the
+    threshold remain, in the same selection order. If none would, nothing is
+    removed, so this can only narrow the choice, never empty it.
+    """
+    if not safe:
+        return list(safe)
+    best = max(candidate.objective_score for candidate in safe)
+    if best < settings.winning_threshold:
+        return list(safe)
+    floor = max(settings.winning_threshold, best - settings.winning_margin)
+    kept = [candidate for candidate in safe if candidate.objective_score >= floor]
+    return kept or list(safe)
+
+
 def truncate_distribution(
     distribution: MoveDistribution,
     *,
@@ -376,7 +395,7 @@ class AdversarialSearcher:
             )
 
         stats.sort(key=lambda candidate: (-selection_score(candidate, settings), candidate.move.uci()))
-        safe = [candidate for candidate in stats if candidate.is_safe]
+        safe = keep_winning([candidate for candidate in stats if candidate.is_safe], settings)
 
         if safe:
             chosen = safe[0]

@@ -616,3 +616,23 @@ def test_a_forcing_move_earns_no_narrow_path_credit() -> None:
     settings = replace(SearchConfig(max_candidates=2, root_margin=500), narrow_path_weight=10.0)
     check, _ = searcher._score_candidate(board, chess.Move.from_uci("a1a8"), chess.WHITE, settings)
     assert check.safe_replies == settings.safe_reply_cap, "a check is scored as wide open"
+
+
+
+def test_a_won_position_is_not_traded_for_a_predicted_blunder() -> None:
+    """Seen against 2000+ engines: +748 -> +49 for a TRAP worth +7584cp of utility."""
+    from src.engine.search import keep_winning
+
+    def stats(uci: str, objective: int, utility: float) -> CandidateStats:
+        return CandidateStats(move=chess.Move.from_uci(uci), expected_utility=utility, worst_case=objective,
+                              objective_score=objective, blunder_trap_delta=utility - objective,
+                              is_safe=True, top_replies=())
+
+    trap, solid = stats("e2e4", 49, 7584.0), stats("d2d4", 748, 760.0)
+    assert [c.move.uci() for c in keep_winning([trap, solid], SearchConfig())] == ["d2d4"]
+
+    mate, plus_six = stats("e2e4", 9990, 9990.0), stats("d2d4", 637, 9000.0)
+    assert [c.move.uci() for c in keep_winning([plus_six, mate], SearchConfig())] == ["e2e4"], "keep the mate"
+
+    level_trap, level = stats("e2e4", -100, 300.0), stats("d2d4", 50, 60.0)
+    assert keep_winning([level_trap, level], SearchConfig()) == [level_trap, level], "undecided: traps stay"
