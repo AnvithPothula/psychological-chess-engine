@@ -106,7 +106,7 @@ def test_the_arms_differ_only_in_pool_and_floor() -> None:
     assert BASELINE.use_prior_candidates is False and TRAP.use_prior_candidates is True
     assert BASELINE.search.gambit_lambda == 0.0, "the control keeps the static floor"
     assert TRAP.search.gambit_lambda > 0.0 and TRAP.search.max_proposals > 0
-    assert set(ARMS) == {"baseline", "trap", "standard", "skew"}
+    assert set(ARMS) == {"baseline", "trap", "standard", "skew", "psych", "psych-capped"}
 
 
 def test_a_missing_prior_is_fatal_rather_than_a_silent_downgrade() -> None:

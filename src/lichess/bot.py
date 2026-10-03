@@ -39,10 +39,10 @@ from berserk.types.challenges import ChallengeDeclineReason
 from src import config as engine_config
 from src.engine import EvaluatorError
 from src.engine.book import OpeningBook
-from src.engine.bot_factory import SKEW, STANDARD, build_book
+from src.engine.bot_factory import SKEW, STANDARD, build_book, for_humans
 from src.engine.policy_generator import load_proposer
 from src.engine.search import AdversarialSearcher, TerminalPositionError
-from src.lichess.time_manager import TimeManager
+from src.lichess.time_manager import TimeManager, clock_seconds
 from src.types import MoveSource
 
 __all__ = ["BotConfig", "LichessBot", "LichessClient", "RatingAdaptiveModel", "main"]
@@ -90,6 +90,13 @@ class TimedTokenSession(berserk.TokenSession):
         kwargs.setdefault("timeout", (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS))
         return super().request(method, url, *args, **kwargs)
 
+
+LOW_CLOCK_SECONDS: Final[float] = 30.0
+LOW_CLOCK_BOOST: Final[float] = 2.0
+"""When a human is under 30s, narrow paths count double. Human blunder rates
+are flat above about 10s and jump below it (24% under 10s against under 5% at
+2-3 minutes, elite blitz), and low time and an ambiguous position compound each
+other; 30s is when there is still time to steer into one."""
 
 GAME_STREAM_ATTEMPTS: Final[int] = 8
 """Reconnects to one game's stream before giving it up. The game goes on on
@@ -168,10 +175,10 @@ class BotConfig:
     game_log: Optional[Path] = None
     """JSONL of each game's arm and outcome, keyed by game id. ``None`` disables it."""
 
-    narrow_path_weight: float = 0.0
-    """Omega for the quiet narrow-path term, applied to every move's search.
-    Off by default: the clock analysis shows humans blunder in such positions,
-    not that steering them there causes it."""
+    psychological: bool = True
+    """Play humans with ``bot_factory.HUMAN_PLAY`` -- looser floor, narrow paths,
+    traps while winning -- and bots with the conservative defaults and no trap
+    book. Bots are not fooled by any of it and it cost games against them."""
 
     allow_bots: bool = False
     """Accept BOT challengers at any rating and speed. For play, not data: their
@@ -192,6 +199,7 @@ class GameSession:
     moves_played: int = field(default=0)
     arm: str = ""
     front_book_moves: int = 0
+    opponent_bot: bool = False
 
 
 class LichessBot:
@@ -497,8 +505,13 @@ class LichessBot:
             logger.error("game %s: could not model rating %d (%s), keeping %d",
                          game_id, maia_rating, exc, self.human_model.rating)
             maia_rating = self.human_model.rating
+        opponent_bot = opponent.get("title") == "BOT"
         arm = ""
-        if self.books:
+        if self.books and opponent_bot and self.config.psychological:
+            # No trap gambits against engines; the repertoire is engine-equal.
+            arm = "vs-bot"
+            self.searcher.book = self.books[SKEW.name]
+        elif self.books:
             arm = STANDARD.name if self._rng.random() < self.config.control_share else SKEW.name
             self.searcher.book = self.books[arm]
         # The book bands off the same rating: traps the opponent is likely to
@@ -529,6 +542,7 @@ class LichessBot:
         })
         return GameSession(
             arm=arm,
+            opponent_bot=opponent_bot,
             game_id=game_id,
             my_color=my_color,
             initial_fen=initial_fen,
@@ -572,8 +586,16 @@ class LichessBot:
             state.get("binc", 0),
             is_white=session.my_color == chess.WHITE,
         )
-        if self.config.narrow_path_weight:
-            search_config = replace(search_config, narrow_path_weight=self.config.narrow_path_weight)
+        if self.config.psychological and not session.opponent_bot:
+            search_config = for_humans(search_config)
+            their_clock = clock_seconds(
+                state.get("btime" if session.my_color == chess.WHITE else "wtime", 0)
+            )
+            if 0 < their_clock < LOW_CLOCK_SECONDS:
+                search_config = replace(
+                    search_config,
+                    narrow_path_weight=search_config.narrow_path_weight * LOW_CLOCK_BOOST,
+                )
         try:
             result = self.searcher.search(session.board, search_config)
         except TerminalPositionError:
@@ -720,8 +742,8 @@ def main() -> int:
                         help="Also accept BOT challengers, at any rating and speed. Not data.")
     parser.add_argument("--challenge-bots", action="store_true",
                         help="Also challenge nearby-rated online bots, one at a time, minutes apart.")
-    parser.add_argument("--narrow-path-weight", type=float, default=0.0,
-                        help="Centipawns per safe reply in quiet positions (Milestone 19). Off at 0.")
+    parser.add_argument("--no-psych", action="store_true",
+                        help="Play humans with the same conservative search as bots.")
     parser.add_argument("--arena", default=None,
                         help="Join this Arena on start. Only Arenas created with bots allowed "
                              "admit BOT accounts, and the token needs the tournament:write scope.")
@@ -749,7 +771,7 @@ def main() -> int:
         min_initial_seconds=args.min_clock, min_rating=args.min_rating,
         max_rating=args.max_rating, speeds=frozenset(args.speeds),
         control_share=args.control_share, game_log=args.game_log, allow_bots=args.allow_bots,
-        narrow_path_weight=args.narrow_path_weight,
+        psychological=not args.no_psych,
     )
 
     with ExitStack() as stack:

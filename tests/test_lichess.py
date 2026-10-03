@@ -506,6 +506,8 @@ def test_only_humans_in_the_mined_band_at_the_mined_speeds_are_accepted() -> Non
 
 
 class _Book:
+    is_empty = True  # the search skips an empty book, so no probe is needed
+
     def __init__(self) -> None:
         self.rating: Optional[int] = None
 
@@ -651,3 +653,47 @@ def test_every_request_gets_a_read_timeout_so_a_dead_stream_cannot_hang() -> Non
         TimedTokenSession("token").request("GET", "https://x", timeout=5)
         assert seen["timeout"] == 5, "an explicit timeout wins"
     assert READ_TIMEOUT_SECONDS > 2 * 7.0, "must outlast keep-alives"
+
+
+
+# --- psychology first against humans, safety first against bots ---------------
+
+
+def _searched_with(bot: LichessBot) -> List[Any]:
+    seen: List[Any] = []
+    real = bot.searcher.search
+
+    def capture(board: chess.Board, config: Any = None) -> Any:
+        seen.append(config)
+        return real(board, config)
+
+    bot.searcher.search = capture  # type: ignore[method-assign]
+    return seen
+
+
+def test_humans_get_the_psychological_search_and_more_of_it_when_short_of_time() -> None:
+    from src.engine.bot_factory import HUMAN_PLAY
+
+    bot, _ = build_bot(FakeBots())
+    seen = _searched_with(bot)
+    session = bot._start_session("g1", _game_full())
+    bot._advance(session, {"moves": "", "status": "started", "wtime": 300000, "btime": 300000})
+    bot._advance(session, {"moves": "", "status": "started", "wtime": 300000, "btime": 20000})
+    relaxed, short = seen
+    assert relaxed.safety_threshold == HUMAN_PLAY["safety_threshold"]
+    assert relaxed.narrow_path_weight == HUMAN_PLAY["narrow_path_weight"]
+    assert short.narrow_path_weight == 2 * HUMAN_PLAY["narrow_path_weight"], "the human has 20s"
+    assert relaxed.leaf_depth <= 6 and relaxed.root_depth <= 6, "not simply out-calculating them"
+
+
+def test_bots_get_the_conservative_search_and_no_trap_book() -> None:
+    from src.engine.bot_factory import SKEW, STANDARD
+
+    bot, _ = build_bot(FakeBots())
+    bot.books = {STANDARD.name: _Book(), SKEW.name: _Book()}  # type: ignore[assignment]
+    seen = _searched_with(bot)
+    engine = {**_game_full(), "black": {"id": "otherbot", "name": "OtherBot", "rating": 2000, "title": "BOT"}}
+    session = bot._start_session("g1", engine)
+    assert session.arm == "vs-bot" and bot.searcher.book is bot.books[SKEW.name]
+    bot._advance(session, {"moves": "", "status": "started", "wtime": 300000, "btime": 20000})
+    assert seen[0].narrow_path_weight == 0.0 and seen[0].winning_margin == 200

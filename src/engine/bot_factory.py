@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import logging
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Final, Iterator, Optional
+from typing import Any, Final, Iterator, Mapping, Optional
 
 from src.engine.book import OpeningBook
 from src.engine.maia3_model import Maia3Evaluator
@@ -22,7 +22,8 @@ from src.training.train_dpo import WARM_CHECKPOINT
 from src.types import SearchConfig
 
 __all__ = [
-    "BotSpec", "BASELINE", "TRAP", "STANDARD", "SKEW", "ARMS", "build_book", "build_searcher",
+    "BotSpec", "BASELINE", "TRAP", "STANDARD", "SKEW", "PSYCH", "PSYCH_CAPPED", "ARMS",
+    "HUMAN_PLAY", "for_humans", "build_book", "build_searcher",
 ]
 
 logger = logging.getLogger(__name__)
@@ -107,8 +108,57 @@ TRAP: Final[BotSpec] = BotSpec(
     search=GAMBIT_SEARCH,
 )
 
+HUMAN_PLAY: Final[Mapping[str, Any]] = {
+    "safety_threshold": 250,
+    "gambit_lambda": 0.5,
+    "gambit_floor": 450,
+    "narrow_path_weight": 10.0,
+    "winning_margin": 10_000,
+}
+"""How the bot plays humans: psychology first, at some cost in objective strength.
+
+- A looser floor (-250cp, sliding to -450 when the expected payout is large):
+  the odds bots perform at 2000-2700 against humans from positions a queen down,
+  so objective soundness is not what beats humans.
+- The quiet narrow-path term on: in August 2026 human games, quiet positions
+  with two or fewer safe replies were blundered 22% of the time against 3%.
+- Won positions must stay won (+300), but need not stay within 200cp of the best
+  move, so traps are still set while winning. Against bots the full rule holds:
+  engines do not fall for them, and that cost five won games.
+
+Never weaker by losing on purpose: Lichess flags bots that throw games."""
+
+HUMAN_DEPTH: Final[int] = 6
+"""Search depth cap against humans, so the bot is not simply out-calculating
+them. Measured against maia3@1900, 300 games per arm: the cap made the
+opponent blunder more, 11.74% -> 13.48% of moves (+3.2 sigma against the
+uncapped human profile), while the score dropped only 0.997 -> 0.990. The arena
+cannot say how much weaker that is against people; Maia 1900 loses to either."""
+
+
+def for_humans(config: SearchConfig) -> SearchConfig:
+    """``config`` with the human profile applied and its depth capped."""
+    return replace(
+        config, **HUMAN_PLAY,
+        root_depth=min(config.root_depth, HUMAN_DEPTH),
+        leaf_depth=min(config.leaf_depth, HUMAN_DEPTH),
+    )
+
+
+PSYCH: Final[BotSpec] = BotSpec(
+    name="psych",
+    description="The human profile without the depth cap, for comparison.",
+    search=replace(ARENA_SEARCH, **HUMAN_PLAY),
+)
+
+PSYCH_CAPPED: Final[BotSpec] = BotSpec(
+    name="psych-capped",
+    description="The human profile as played live: looser floor, narrow paths, depth 6.",
+    search=for_humans(ARENA_SEARCH),
+)
+
 ARMS: Final[dict[str, BotSpec]] = {
-    arm.name: arm for arm in (BASELINE, TRAP, STANDARD, SKEW)
+    arm.name: arm for arm in (BASELINE, TRAP, STANDARD, SKEW, PSYCH, PSYCH_CAPPED)
 }
 
 
