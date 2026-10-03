@@ -287,7 +287,7 @@ class SearchConfig:
     The safety floor is absolute -- a move may not drop below -180cp -- so a
     position at +700 could be traded down to +50 whenever the opponent model
     predicted a blunder. Against 2000-2200 engines that happened 12 times in 45
-    games, turning four won games into draws: the moves were flagged TRAP with
+    games, turning five won games into draws: the moves were flagged TRAP with
     expected utility up to +7584cp, betting on errors engines do not make. A
     won position wins without the bet."""
 
