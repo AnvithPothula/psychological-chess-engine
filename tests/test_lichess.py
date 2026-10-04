@@ -732,7 +732,7 @@ def test_pacing_classifies_moves_and_never_spends_the_bots_own_time() -> None:
 def test_humans_get_paced_moves_and_bots_get_them_at_once() -> None:
     def waits_in(game: Mapping[str, Any]) -> Tuple[List[float], Any]:
         bot, _ = build_bot(FakeBots())
-        bot.config = BotConfig(pacing=True)
+        bot.config = BotConfig(pacing=True, pacing_share=1.0)
         waits: List[float] = []
 
         class Stop:
@@ -755,3 +755,31 @@ def test_humans_get_paced_moves_and_bots_get_them_at_once() -> None:
     engine = {**_game_full(), "black": {"id": "otherbot", "name": "OtherBot", "rating": 2000, "title": "BOT"}}
     bot_waits, versus_bot = waits_in(engine)
     assert bot_waits == [] and versus_bot.cadence == {}
+
+
+
+def test_each_human_move_is_logged_with_its_telemetry_and_a_coin_flipped_wait(tmp_path: Any) -> None:
+    import json
+    import random
+
+    log = tmp_path / "games.jsonl"
+    bot, _ = build_bot(FakeBots())
+    bot.config = BotConfig(pacing=True, pacing_share=0.5, game_log=log)
+    bot._rng = random.Random(3)
+
+    class Stop:
+        def is_set(self) -> bool:
+            return False
+
+        def wait(self, timeout: float) -> bool:
+            return False
+
+    bot._stop = Stop()  # type: ignore[assignment]
+    session = bot._start_session("g1", _game_full())
+    paced = []
+    for _ in range(40):
+        bot._advance(session, {"moves": "", "status": "started", "wtime": 300000, "btime": 300000})
+    moves = [json.loads(line) for line in log.read_text().splitlines() if '"move"' in line]
+    assert len(moves) == 40 and {"cadence", "paced", "safe_replies", "utility", "trap"} <= set(moves[0])
+    paced = [m["paced"] for m in moves]
+    assert 10 < sum(paced) < 30, "about half the waits applied, half withheld"

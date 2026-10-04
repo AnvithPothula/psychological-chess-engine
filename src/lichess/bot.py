@@ -28,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Final, Iterator, Mapping, Optional, Protocol
+from typing import Any, Callable, Dict, Final, Iterator, Mapping, Optional, Protocol, Tuple
 
 import chess
 import berserk
@@ -178,6 +178,12 @@ class BotConfig:
     pacing: bool = True
     """Pace moves against humans with :class:`AdaptivePacingController`. Bots get
     every move at once: the daily game quota, not their feelings, is the limit."""
+
+    pacing_share: float = 0.5
+    """Chance a move's wait is actually applied. The cadence is chosen by the
+    position -- snaps for forced moves, waits for quiet ones -- so comparing
+    cadences compares positions. A coin flip within each cadence is what lets
+    paced and unpaced replies to the same kind of position be compared."""
 
     psychological: bool = True
     """Play humans with ``bot_factory.HUMAN_PLAY`` -- looser floor, narrow paths,
@@ -634,8 +640,22 @@ class LichessBot:
             "game %s: playing %s (depth %d/%d) %s",
             session.game_id, san, search_config.root_depth, search_config.leaf_depth, result.summary(),
         )
+        cadence, wait = Cadence.NONE, 0.0
         if pacing:
-            self._pace(session, result, time.monotonic() - started, own_clock, increment, their_clock)
+            cadence, wait = self._pace(
+                session, result, time.monotonic() - started, own_clock, increment, their_clock,
+            )
+        if not session.opponent_bot:
+            chosen = next((c for c in result.candidates if c.move == result.move), None)
+            self._record({
+                "event": "move", "game": session.game_id, "ply": session.board.ply(),
+                "cadence": cadence.value, "paced": wait > 0, "wait": round(wait, 2),
+                "safe_replies": chosen.safe_replies if chosen else None,
+                "utility": round(float(result.expected_utility), 1),
+                "objective": chosen.objective_score if chosen else None,
+                "trap": bool(result.is_trap), "gambit": bool(chosen and chosen.is_gambit),
+                "source": result.source.value,
+            })
         if not self._submit_move(session.game_id, result.move.uci()):
             logger.error("game %s: could not submit %s, abandoning the game", session.game_id, san)
             return False
@@ -644,8 +664,9 @@ class LichessBot:
     def _pace(
         self, session: GameSession, result: Any, elapsed: float,
         own_clock: float, increment: float, their_clock: float,
-    ) -> None:
-        """Wait out the move's cadence. On the stop event, so shutdown is not held up."""
+    ) -> Tuple[Cadence, float]:
+        """Wait out the move's cadence, on the stop event so shutdown is not held
+        up. Returns the cadence and the wait actually applied."""
         board, move = session.board, result.move
         chosen = next((c for c in result.candidates if c.move == move), None)
         cadence = self.pacing.classify(
@@ -660,10 +681,13 @@ class LichessBot:
             cadence, elapsed=elapsed, own_clock=own_clock,
             budget=self.time_manager.budget_seconds(own_clock, increment), rng=self._rng,
         )
+        if self._rng.random() >= self.config.pacing_share:
+            wait = 0.0  # the control half of the coin flip
         session.cadence[cadence.value] = session.cadence.get(cadence.value, 0) + 1
         if wait > 0:
             logger.debug("game %s: %s, waiting %.2fs", session.game_id, cadence.value, wait)
             self._stop.wait(wait)
+        return cadence, wait
 
     def _fallback_move(self, board: chess.Board) -> chess.Move:
         try:
