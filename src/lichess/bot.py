@@ -23,15 +23,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Final, Iterator, Mapping, Optional, Protocol, Tuple
 
-import chess
 import berserk
+import chess
 import requests
 from berserk.exceptions import ApiError, ResponseError
 from berserk.types.challenges import ChallengeDeclineReason
@@ -767,6 +769,24 @@ class LichessBot:
         return False
 
 
+def keep_awake(pid: int) -> Optional["subprocess.Popen[bytes]"]:
+    """Hold macOS awake for as long as ``pid`` lives. ``None`` off macOS.
+
+    The bot lost four games on time by freezing mid-game while the Mac slept
+    (20:17, 23:53, 05:47 and 08:57 in ``pmset -g log``). In one the Mac woke for
+    maintenance, the challenger started a game, and the Mac slept again 15s in.
+    ``caffeinate -i -s`` blocks idle sleep, and system sleep on AC power, until
+    ``-w`` sees the bot exit. Closing the lid still sleeps the machine.
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin" or shutil.which("caffeinate") is None:
+        return None
+    return subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(pid)])
+
+
 def _game_id(game: Any) -> str:
     if not isinstance(game, Mapping):
         return ""
@@ -803,6 +823,8 @@ def main() -> int:
                         help="Chance a game uses the standard book instead of the repertoire. "
                              "0 plays every game with the repertoire and measures nothing.")
     parser.add_argument("--game-log", type=Path, default=Path("build/live_games.jsonl"))
+    parser.add_argument("--log-file", type=Path, default=Path("build/bot.log"),
+                        help="Where the bridge's own log is kept, besides the terminal.")
     parser.add_argument("--allow-bots", action="store_true",
                         help="Also accept BOT challengers, at any rating and speed. Not data.")
     parser.add_argument("--challenge-bots", action="store_true",
@@ -824,6 +846,16 @@ def main() -> int:
         datefmt="%H:%M:%S",
     )
     logging.getLogger("chess.engine").setLevel(logging.WARNING)
+    # The terminal alone lost the log of four timeouts when its scrollback was
+    # cleared; the file keeps the last ~30MB.
+    from logging.handlers import RotatingFileHandler
+
+    args.log_file.parent.mkdir(parents=True, exist_ok=True)
+    file_log = RotatingFileHandler(args.log_file, maxBytes=10_000_000, backupCount=3)
+    file_log.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(file_log)
+    if keep_awake(os.getpid()) is not None:
+        logger.info("lichess: holding the Mac awake while the bot runs")
 
     try:
         token = engine_config.lichess_token()

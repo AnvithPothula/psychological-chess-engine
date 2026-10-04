@@ -783,3 +783,21 @@ def test_each_human_move_is_logged_with_its_telemetry_and_a_coin_flipped_wait(tm
     assert len(moves) == 40 and {"cadence", "paced", "safe_replies", "utility", "trap"} <= set(moves[0])
     paced = [m["paced"] for m in moves]
     assert 10 < sum(paced) < 30, "about half the waits applied, half withheld"
+
+
+
+def test_the_bot_holds_the_mac_awake_for_its_own_lifetime() -> None:
+    """Four games were lost on time with the Mac asleep mid-game."""
+    import pytest
+
+    from src.lichess import bot as bridge
+
+    launched: List[List[str]] = []
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("sys.platform", "darwin")
+        patch.setattr("shutil.which", lambda name: "/usr/bin/caffeinate")
+        patch.setattr("subprocess.Popen", lambda args: launched.append(args) or "proc")
+        assert bridge.keep_awake(4242) == "proc"
+        patch.setattr("sys.platform", "linux")
+        assert bridge.keep_awake(4242) is None
+    assert launched == [["caffeinate", "-i", "-s", "-w", "4242"]]
