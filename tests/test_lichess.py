@@ -161,7 +161,7 @@ def build_bot(bots: FakeBots, maia: Optional[StubMaia] = None) -> Tuple[LichessB
     model = maia if maia is not None else StubMaia()
     searcher = AdversarialSearcher(ScriptedEvaluator({}, {}, default_cp=0), model)
     bot = LichessBot(FakeClient(bots), searcher, model, bot_id=BOT_ID, config=BotConfig(
-        reconnect_backoff_seconds=0.001, max_reconnect_backoff_seconds=0.001))
+        reconnect_backoff_seconds=0.001, max_reconnect_backoff_seconds=0.001, pacing=False))
     return bot, model
 
 
@@ -697,3 +697,61 @@ def test_bots_get_the_conservative_search_and_no_trap_book() -> None:
     assert session.arm == "vs-bot" and bot.searcher.book is bot.books[SKEW.name]
     bot._advance(session, {"moves": "", "status": "started", "wtime": 300000, "btime": 20000})
     assert seen[0].narrow_path_weight == 0.0 and seen[0].winning_margin == 200
+
+
+
+# --- move pacing against humans -------------------------------------------------
+
+
+def test_pacing_classifies_moves_and_never_spends_the_bots_own_time() -> None:
+    import random
+
+    from src.lichess.time_manager import AdaptivePacingController, Cadence
+
+    pace = AdaptivePacingController()
+    calm = dict(forced=False, book=False, trap=False, quiet=True, utility=20.0, opponent_clock=120.0)
+    assert pace.classify(**calm) is Cadence.DELIBERATE
+    assert pace.classify(**{**calm, "opponent_clock": 12.0}) is Cadence.SNAP, "their scramble: reply at once"
+    assert pace.classify(**{**calm, "forced": True}) is Cadence.SNAP
+    assert pace.classify(**{**calm, "book": True}) is Cadence.SNAP
+    assert pace.classify(**{**calm, "trap": True}) is Cadence.BAIT
+    assert pace.classify(**{**calm, "utility": 600.0}) is Cadence.NONE, "not balanced"
+    assert pace.classify(**{**calm, "quiet": False}) is Cadence.NONE
+
+    rng = random.Random(0)
+    for cadence in Cadence:
+        assert pace.delay(cadence, elapsed=0.0, own_clock=9.9, budget=30.0, rng=rng) == 0.0, "own clock < 10s"
+    for _ in range(50):
+        wait = pace.delay(Cadence.DELIBERATE, elapsed=0.4, own_clock=120.0, budget=30.0, rng=rng)
+        assert 1.0 - 0.4 <= wait <= 2.5 - 0.4, "ranges are total move time, search included"
+        assert pace.delay(Cadence.SNAP, elapsed=0.4, own_clock=120.0, budget=30.0, rng=rng) == 0.0
+    assert pace.delay(Cadence.DELIBERATE, elapsed=0.5, own_clock=120.0, budget=0.8, rng=rng) <= 0.3 + 1e-9, \
+        "never past the move's time budget"
+
+
+def test_humans_get_paced_moves_and_bots_get_them_at_once() -> None:
+    def waits_in(game: Mapping[str, Any]) -> Tuple[List[float], Any]:
+        bot, _ = build_bot(FakeBots())
+        bot.config = BotConfig(pacing=True)
+        waits: List[float] = []
+
+        class Stop:
+            def is_set(self) -> bool:
+                return False
+
+            def wait(self, timeout: float) -> bool:
+                waits.append(timeout)
+                return False
+
+        bot._stop = Stop()  # type: ignore[assignment]
+        session = bot._start_session("g1", game)
+        bot._advance(session, {"moves": "", "status": "started", "wtime": 300000, "btime": 300000,
+                               "winc": 3000, "binc": 3000})
+        return waits, session
+
+    human_waits, human = waits_in(_game_full())
+    assert sum(human.cadence.values()) == 1, "every move's cadence is counted for the log"
+    assert human_waits and all(0.0 < w <= 2.5 for w in human_waits), "a quiet opening move deliberates"
+    engine = {**_game_full(), "black": {"id": "otherbot", "name": "OtherBot", "rating": 2000, "title": "BOT"}}
+    bot_waits, versus_bot = waits_in(engine)
+    assert bot_waits == [] and versus_bot.cadence == {}

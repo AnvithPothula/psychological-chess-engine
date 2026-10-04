@@ -42,7 +42,7 @@ from src.engine.book import OpeningBook
 from src.engine.bot_factory import SKEW, STANDARD, build_book, for_humans
 from src.engine.policy_generator import load_proposer
 from src.engine.search import AdversarialSearcher, TerminalPositionError
-from src.lichess.time_manager import TimeManager, clock_seconds
+from src.lichess.time_manager import AdaptivePacingController, Cadence, TimeManager, clock_seconds
 from src.types import MoveSource
 
 __all__ = ["BotConfig", "LichessBot", "LichessClient", "RatingAdaptiveModel", "main"]
@@ -175,6 +175,10 @@ class BotConfig:
     game_log: Optional[Path] = None
     """JSONL of each game's arm and outcome, keyed by game id. ``None`` disables it."""
 
+    pacing: bool = True
+    """Pace moves against humans with :class:`AdaptivePacingController`. Bots get
+    every move at once: the daily game quota, not their feelings, is the limit."""
+
     psychological: bool = True
     """Play humans with ``bot_factory.HUMAN_PLAY`` -- looser floor, narrow paths,
     traps while winning -- and bots with the conservative defaults and no trap
@@ -200,6 +204,8 @@ class GameSession:
     arm: str = ""
     front_book_moves: int = 0
     opponent_bot: bool = False
+    cadence: Dict[str, int] = field(default_factory=dict)
+    """Moves per cadence, logged at the finish so pacing can be judged later."""
 
 
 class LichessBot:
@@ -216,8 +222,10 @@ class LichessBot:
         bot_id: Optional[str] = None,
         books: Optional[Mapping[str, OpeningBook]] = None,
         rng: Optional[random.Random] = None,
+        pacing: Optional[AdaptivePacingController] = None,
     ) -> None:
         self.client = client
+        self.pacing = pacing if pacing is not None else AdaptivePacingController()
         self.searcher = searcher
         self.books = books
         """Arm name to book. ``None`` keeps whatever book the searcher was given."""
@@ -568,6 +576,7 @@ class LichessBot:
                 "event": "finish", "game": session.game_id, "arm": session.arm,
                 "status": status, "winner": str(state.get("winner", "")),
                 "plies": session.moves_played, "front_book_moves": session.front_book_moves,
+                "cadence": session.cadence,
             })
             return False
         # Over by the rules, not merely claimable: python-chess calls a draw
@@ -579,6 +588,11 @@ class LichessBot:
         if session.board.turn != session.my_color:
             return True
 
+        mine, theirs = ("w", "b") if session.my_color == chess.WHITE else ("b", "w")
+        own_clock = clock_seconds(state.get(f"{mine}time", 0))
+        their_clock = clock_seconds(state.get(f"{theirs}time", 0))
+        increment = clock_seconds(state.get(f"{mine}inc", 0))
+        pacing = self.config.pacing and not session.opponent_bot
         search_config = self.time_manager.calculate_search_config(
             state.get("wtime", 0),
             state.get("btime", 0),
@@ -586,16 +600,17 @@ class LichessBot:
             state.get("binc", 0),
             is_white=session.my_color == chess.WHITE,
         )
+        if pacing and 0 < their_clock < self.pacing.opponent_scramble_seconds:
+            # A wait cannot make a slow search fast; a cheaper profile can.
+            search_config = self.time_manager.profiles[min(1, len(self.time_manager.profiles) - 1)].config
         if self.config.psychological and not session.opponent_bot:
             search_config = for_humans(search_config)
-            their_clock = clock_seconds(
-                state.get("btime" if session.my_color == chess.WHITE else "wtime", 0)
-            )
             if 0 < their_clock < LOW_CLOCK_SECONDS:
                 search_config = replace(
                     search_config,
                     narrow_path_weight=search_config.narrow_path_weight * LOW_CLOCK_BOOST,
                 )
+        started = time.monotonic()
         try:
             result = self.searcher.search(session.board, search_config)
         except TerminalPositionError:
@@ -619,10 +634,36 @@ class LichessBot:
             "game %s: playing %s (depth %d/%d) %s",
             session.game_id, san, search_config.root_depth, search_config.leaf_depth, result.summary(),
         )
+        if pacing:
+            self._pace(session, result, time.monotonic() - started, own_clock, increment, their_clock)
         if not self._submit_move(session.game_id, result.move.uci()):
             logger.error("game %s: could not submit %s, abandoning the game", session.game_id, san)
             return False
         return True
+
+    def _pace(
+        self, session: GameSession, result: Any, elapsed: float,
+        own_clock: float, increment: float, their_clock: float,
+    ) -> None:
+        """Wait out the move's cadence. On the stop event, so shutdown is not held up."""
+        board, move = session.board, result.move
+        chosen = next((c for c in result.candidates if c.move == move), None)
+        cadence = self.pacing.classify(
+            forced=board.legal_moves.count() == 1,
+            book=result.source in (MoveSource.BOOK_TRAP, MoveSource.BOOK_STANDARD),
+            trap=bool(result.is_trap or (chosen is not None and chosen.is_gambit)),
+            quiet=not (board.is_check() or board.is_capture(move) or board.gives_check(move)),
+            utility=float(result.expected_utility),
+            opponent_clock=their_clock,
+        )
+        wait = self.pacing.delay(
+            cadence, elapsed=elapsed, own_clock=own_clock,
+            budget=self.time_manager.budget_seconds(own_clock, increment), rng=self._rng,
+        )
+        session.cadence[cadence.value] = session.cadence.get(cadence.value, 0) + 1
+        if wait > 0:
+            logger.debug("game %s: %s, waiting %.2fs", session.game_id, cadence.value, wait)
+            self._stop.wait(wait)
 
     def _fallback_move(self, board: chess.Board) -> chess.Move:
         try:
@@ -742,6 +783,8 @@ def main() -> int:
                         help="Also accept BOT challengers, at any rating and speed. Not data.")
     parser.add_argument("--challenge-bots", action="store_true",
                         help="Also challenge nearby-rated online bots, one at a time, minutes apart.")
+    parser.add_argument("--no-pacing", action="store_true",
+                        help="Move as soon as the search finishes, against humans too.")
     parser.add_argument("--no-psych", action="store_true",
                         help="Play humans with the same conservative search as bots.")
     parser.add_argument("--arena", default=None,
@@ -771,7 +814,7 @@ def main() -> int:
         min_initial_seconds=args.min_clock, min_rating=args.min_rating,
         max_rating=args.max_rating, speeds=frozenset(args.speeds),
         control_share=args.control_share, game_log=args.game_log, allow_bots=args.allow_bots,
-        psychological=not args.no_psych,
+        psychological=not args.no_psych, pacing=not args.no_pacing,
     )
 
     with ExitStack() as stack:

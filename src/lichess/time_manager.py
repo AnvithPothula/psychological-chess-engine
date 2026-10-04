@@ -17,13 +17,18 @@ matching the Lichess wire format.
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass
 from datetime import timedelta
+from enum import Enum
 from typing import Final, Tuple, Union
 
 from src.types import SearchConfig
 
-__all__ = ["ClockValue", "SearchProfile", "TimeManager", "DEFAULT_PROFILES", "clock_seconds"]
+__all__ = [
+    "AdaptivePacingController", "Cadence", "ClockValue", "SearchProfile", "TimeManager",
+    "DEFAULT_PROFILES", "clock_seconds",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -134,3 +139,68 @@ class TimeManager:
             remaining, increment, budget, chosen.name,
         )
         return chosen
+
+
+class Cadence(Enum):
+    """How long a move should appear to take, against a human."""
+
+    SNAP = "snap"
+    BAIT = "bait"
+    DELIBERATE = "deliberate"
+    NONE = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptivePacingController:
+    """Turns move speed into part of the play against humans.
+
+    Ranges are *total* move times -- search plus any added wait -- because the
+    wait comes after the search: a move whose search already took longer than
+    its target gets no wait at all. That is what makes SNAP a snap rather than
+    a fixed pause.
+
+    Unproven as a lever. No study was found on whether an opponent's move speed
+    changes human errors, so the bridge logs every move's cadence for a later
+    look. It is bounded twice: never past the time manager's per-move budget,
+    which is what the move was allowed to cost anyway, and never at all once
+    the bot's own clock is under ``own_floor_seconds``.
+    """
+
+    snap: Tuple[float, float] = (0.1, 0.3)
+    """Forced replies and book moves, and anything while the human is in a time
+    scramble: replying at once denies them thinking on the bot's clock."""
+
+    bait: Tuple[float, float] = (0.5, 1.0)
+    """Traps and gambits: brisk, like a confident human, not an instant premove."""
+
+    deliberate: Tuple[float, float] = (1.0, 2.5)
+    """Quiet, balanced positions, where an instant engine reply signals that the
+    bot has seen everything."""
+
+    opponent_scramble_seconds: float = 15.0
+    own_floor_seconds: float = 10.0
+    balanced_cp: float = 150.0
+
+    def classify(
+        self, *, forced: bool, book: bool, trap: bool, quiet: bool, utility: float,
+        opponent_clock: float,
+    ) -> Cadence:
+        if forced or book or 0.0 < opponent_clock < self.opponent_scramble_seconds:
+            return Cadence.SNAP
+        if trap:
+            return Cadence.BAIT
+        if quiet and abs(utility) < self.balanced_cp:
+            return Cadence.DELIBERATE
+        return Cadence.NONE
+
+    def delay(
+        self, cadence: Cadence, *, elapsed: float, own_clock: float, budget: float,
+        rng: random.Random,
+    ) -> float:
+        """Seconds to wait before submitting, given the search took ``elapsed``."""
+        if cadence is Cadence.NONE or own_clock < self.own_floor_seconds:
+            return 0.0
+        low, high = {Cadence.SNAP: self.snap, Cadence.BAIT: self.bait,
+                     Cadence.DELIBERATE: self.deliberate}[cadence]
+        wait = rng.uniform(low, high) - elapsed
+        return max(0.0, min(wait, budget - elapsed))
