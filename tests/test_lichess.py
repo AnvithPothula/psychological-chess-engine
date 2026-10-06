@@ -858,3 +858,18 @@ def test_a_quiet_stream_on_the_opponents_move_is_left_alone() -> None:
     assert not LichessBot._stream_is_stale(bot, "g1"), "the opponent is thinking"
     bot.client.games.ongoing = []  # type: ignore[attr-defined]
     assert LichessBot._stream_is_stale(bot, "g1"), "over on the server: rejoin to read the result"
+
+
+def test_a_rejected_move_keeps_the_bot_listening_instead_of_abandoning(tmp_path: Any) -> None:
+    """9jiA6YfJ: the move crossed the server's threefold draw and the game was dropped
+    without its result. Mid-game, abandoning would be a certain loss on time."""
+    import json
+
+    log = tmp_path / "games.jsonl"
+    bots = FakeBots(game_states={"g1": [_game_full(), _game_state("", status="draw")]})
+    bots.raise_on_move = [response_error(400)]
+    bot, _ = build_bot(bots)
+    bot.config = BotConfig(game_log=log, pacing=False)
+    bot.play_game("g1")
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert rows[-1]["event"] == "finish" and rows[-1]["status"] == "draw", "the result was still read"

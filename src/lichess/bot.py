@@ -697,7 +697,8 @@ class LichessBot:
             move = self._fallback_move(session.board)
             logger.warning("game %s: search declined a drawn position, playing %s",
                            session.game_id, session.board.san(move))
-            return self._submit_move(session.game_id, move.uci())
+            self._submit_move(session.game_id, move.uci())
+            return True
         except EvaluatorError as exc:
             logger.error("game %s: search failed (%s), resigning", session.game_id, exc)
             self._call_api("resign", lambda: self.client.bots.resign_game(session.game_id))
@@ -727,8 +728,11 @@ class LichessBot:
                 "source": result.source.value,
             })
         if not self._submit_move(session.game_id, result.move.uci()):
-            logger.error("game %s: could not submit %s, abandoning the game", session.game_id, san)
-            return False
+            # Keep listening rather than abandon the game: if it is over the
+            # stream says so, and if not, the next state -- or the stall check
+            # -- brings a fresh search from the server's own move list.
+            # Abandoning made a rejected move a certain loss on time.
+            logger.error("game %s: could not submit %s; waiting for the server's state", session.game_id, san)
         return True
 
     def _pace(
