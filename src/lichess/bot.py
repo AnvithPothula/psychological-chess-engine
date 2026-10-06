@@ -24,13 +24,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import random
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Final, Iterator, Mapping, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, Final, Iterator, List, Mapping, Optional, Protocol, Tuple
 
 import berserk
 import chess
@@ -100,6 +101,14 @@ are flat above about 10s and jump below it (24% under 10s against under 5% at
 2-3 minutes, elite blitz), and low time and an ambiguous position compound each
 other; 30s is when there is still time to steer into one."""
 
+STALL_CHECK_SECONDS: Final[float] = 15.0
+"""Silence on a game stream after which Lichess is asked whether the bot owes
+a move. A read timeout cannot see this failure: in KYmceMVK the stream kept
+sending keep-alives for ten minutes but no game updates, until the server
+reset it with the bot's clock at zero. tq8SjaTx and wczLemzW were the same."""
+
+_STREAM_END: Final[object] = object()
+
 GAME_STREAM_ATTEMPTS: Final[int] = 8
 """Reconnects to one game's stream before giving it up. The game goes on on
 the server whether or not we are listening."""
@@ -133,6 +142,10 @@ class AccountApi(Protocol):
     def get(self) -> Mapping[str, Any]: ...
 
 
+class GamesApi(Protocol):
+    def get_ongoing(self, count: int = 10) -> List[Dict[str, Any]]: ...
+
+
 class LichessClient(Protocol):
     """Structural view of ``berserk.Client``, so tests can supply a fake."""
 
@@ -141,6 +154,9 @@ class LichessClient(Protocol):
 
     @property
     def account(self) -> AccountApi: ...
+
+    @property
+    def games(self) -> GamesApi: ...
 
 
 class RatingAdaptiveModel(Protocol):
@@ -162,6 +178,7 @@ class BotConfig:
     reconnect_backoff_seconds: float = 2.0
     max_reconnect_backoff_seconds: float = 60.0
     move_attempts: int = 3
+    stall_check_seconds: float = STALL_CHECK_SECONDS
 
     min_rating: int = 1100
     max_rating: int = 1700
@@ -461,7 +478,25 @@ class LichessBot:
         try:
             for attempt in range(1, GAME_STREAM_ATTEMPTS + 1):
                 try:
-                    for event in self.client.bots.stream_game_state(game_id):
+                    events = self._game_events(game_id)
+                    while True:
+                        try:
+                            event = events.get(timeout=self.config.stall_check_seconds)
+                        except queue.Empty:
+                            if self._stop.is_set():
+                                return
+                            if self._stream_is_stale(game_id):
+                                logger.warning(
+                                    "game %s: no update for %.0fs and Lichess says the move is ours; "
+                                    "the stream is stale", game_id, self.config.stall_check_seconds,
+                                )
+                                break
+                            continue
+                        if event is _STREAM_END:
+                            logger.warning("game %s: stream ended before the game did", game_id)
+                            break
+                        if isinstance(event, BaseException):
+                            raise event
                         if self._stop.is_set():
                             logger.info("game %s: shutting down, leaving the game", game_id)
                             return
@@ -482,7 +517,6 @@ class LichessBot:
                                 return
                         else:
                             logger.debug("game %s: ignoring %s event", game_id, kind)
-                    logger.warning("game %s: stream ended before the game did", game_id)
                 except ResponseError as exc:
                     if 400 <= exc.status_code < 500 and exc.status_code != 429:
                         logger.error("game %s: stream refused with HTTP %s (%s)", game_id, exc.status_code, exc)
@@ -498,6 +532,40 @@ class LichessBot:
             logger.error("game %s: gave up after %d reconnects", game_id, GAME_STREAM_ATTEMPTS)
         finally:
             logger.info("game %s: loop finished", game_id)
+
+    def _game_events(self, game_id: str) -> "queue.Queue[Any]":
+        """The game's stream, read on its own thread, so that silence can be
+        noticed. Errors and the stream's end are handed over through the queue;
+        a stale reader left behind exits when the server finally closes it."""
+        events: "queue.Queue[Any]" = queue.Queue()
+
+        def read() -> None:
+            try:
+                for event in self.client.bots.stream_game_state(game_id):
+                    events.put(event)
+                events.put(_STREAM_END)
+            except BaseException as exc:  # the game thread decides what each error means
+                events.put(exc)
+
+        threading.Thread(target=read, name=f"lichess-stream-{game_id}", daemon=True).start()
+        return events
+
+    def _stream_is_stale(self, game_id: str) -> bool:
+        """True if Lichess says this game awaits our move, or has ended.
+
+        Asked only while the game thread is waiting -- never while it is
+        searching -- so a move owed is a move the stream failed to deliver.
+        """
+        try:
+            ongoing = self.client.games.get_ongoing(50)
+        except ResponseError as exc:
+            logger.warning("game %s: could not check for a stall (HTTP %s)", game_id, exc.status_code)
+            return False
+        except NETWORK_ERRORS as exc:
+            logger.warning("game %s: could not check for a stall (%s)", game_id, exc)
+            return False
+        game = next((g for g in ongoing if str(g.get("gameId")) == game_id), None)
+        return game is None or bool(game.get("isMyTurn"))
 
     def _start_session(self, game_id: str, event: Mapping[str, Any]) -> GameSession:
         white = event.get("white") if isinstance(event.get("white"), Mapping) else {}

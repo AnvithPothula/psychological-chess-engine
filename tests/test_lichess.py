@@ -114,10 +114,21 @@ class FakeBots:
         self.resigned.append(game_id)
 
 
+class FakeGames:
+    def __init__(self) -> None:
+        self.ongoing: List[Dict[str, Any]] = []
+        self.calls = 0
+
+    def get_ongoing(self, count: int = 10) -> List[Dict[str, Any]]:
+        self.calls += 1
+        return self.ongoing
+
+
 class FakeClient:
     def __init__(self, bots: FakeBots, bot_id: str = BOT_ID) -> None:
         self.bots = bots
         self.account = FakeAccount(bot_id)
+        self.games = FakeGames()
 
 
 def response_error(status: int, retry_after: Optional[str] = None) -> ResponseError:
@@ -801,3 +812,49 @@ def test_the_bot_holds_the_mac_awake_for_its_own_lifetime() -> None:
         patch.setattr("sys.platform", "linux")
         assert bridge.keep_awake(4242) is None
     assert launched == [["caffeinate", "-i", "-s", "-w", "4242"]]
+
+
+
+def test_a_stream_that_stays_open_but_stops_sending_moves_is_caught_and_rejoined() -> None:
+    """KYmceMVK: keep-alives for ten minutes, no game updates, clock to zero.
+
+    The fake stream delivers gameFull with the opponent to move, then hangs
+    without ending or erroring. Lichess, asked directly, says the move is ours.
+    """
+    import threading
+
+    hang = threading.Event()
+
+    class StallingBots(FakeBots):
+        def stream_game_state(self, game_id: str) -> Iterator[Mapping[str, Any]]:
+            self.game_stream_calls[game_id] = self.game_stream_calls.get(game_id, 0) + 1
+            if self.game_stream_calls[game_id] == 1:
+                yield _game_full("e2e4")          # black to move: the bot, as white, waits
+                hang.wait(5)                       # the stall: open, silent
+                return
+            yield _game_full("e2e4 e7e5")         # a fresh stream has the opponent's reply
+            yield _game_state("e2e4 e7e5", status="resign", winner="white")
+
+    bots = StallingBots()
+    bot, _ = build_bot(bots)
+    bot.config = BotConfig(stall_check_seconds=0.05, reconnect_backoff_seconds=0.001,
+                           max_reconnect_backoff_seconds=0.001, pacing=False)
+    bot.client.games.ongoing = [{"gameId": "g1", "isMyTurn": True}]  # type: ignore[attr-defined]
+    started = time.monotonic()
+    try:
+        bot.play_game("g1")
+    finally:
+        hang.set()
+    assert time.monotonic() - started < 2.0, "caught by the stall check, not by the stream finally ending"
+    assert bots.game_stream_calls["g1"] == 2, "the silent stream was abandoned and rejoined"
+    assert bots.moves, "and the owed move was played"
+
+
+def test_a_quiet_stream_on_the_opponents_move_is_left_alone() -> None:
+    from src.lichess.bot import LichessBot
+
+    bot, _ = build_bot(FakeBots())
+    bot.client.games.ongoing = [{"gameId": "g1", "isMyTurn": False}]  # type: ignore[attr-defined]
+    assert not LichessBot._stream_is_stale(bot, "g1"), "the opponent is thinking"
+    bot.client.games.ongoing = []  # type: ignore[attr-defined]
+    assert LichessBot._stream_is_stale(bot, "g1"), "over on the server: rejoin to read the result"
