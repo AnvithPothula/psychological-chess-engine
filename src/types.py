@@ -126,6 +126,23 @@ class MoveDistribution:
         return max(self.probabilities, key=lambda move: self.probabilities[move])
 
 
+class EngineMode(Enum):
+    """Who the bot is playing, which decides how it chooses a move.
+
+    The human model and every trap term exist to exploit human error. Against
+    an engine they project errors it does not make: in 202 games, 8 of the 13
+    board losses were decided in the middlegame by the expectimax trading
+    objective accuracy for a predicted mistake by an engine.
+    """
+
+    OPPONENT_HUMAN = "human"
+    """Expectimax over the human model, with whatever psychological settings the
+    config carries."""
+
+    OPPONENT_BOT = "bot"
+    """Stockfish's best move. No human model, no traps."""
+
+
 class MoveSource(Enum):
     """Where a played move came from. Drives telemetry, not decisions."""
 
@@ -280,6 +297,9 @@ class SearchConfig:
     more", which for a narrow-path term is all that matters: 8 safe replies and
     25 are both an easy position. Bounding it at the top is what makes one
     MultiPV-8 scan enough -- unlike beta, which needs the tail."""
+
+    mode: EngineMode = EngineMode.OPPONENT_HUMAN
+    """Set per move by the bridge from the opponent's Lichess title."""
 
     winning_threshold: int = 300
     """Once the best candidate is objectively this far ahead, keep it there.

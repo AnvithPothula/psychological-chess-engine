@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from typing import Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from src import config as engine_config
 
@@ -636,3 +636,17 @@ def test_a_won_position_is_not_traded_for_a_predicted_blunder() -> None:
 
     level_trap, level = stats("e2e4", -100, 300.0), stats("d2d4", 50, 60.0)
     assert keep_winning([level_trap, level], SearchConfig()) == [level_trap, level], "undecided: traps stay"
+
+
+def test_against_bots_the_search_plays_stockfishs_best_and_never_asks_the_human_model() -> None:
+    """Projecting human error onto engines decided 8 of 13 board losses."""
+    from src.types import EngineMode
+
+    class NoHumans:
+        def predict_move_probabilities(self, board: chess.Board) -> Any:
+            raise AssertionError("objective mode consulted the human model")
+
+    evaluator = ScriptedEvaluator({"e2e4": 30, "d2d4": 10, "g2g4": -200}, {}, default_cp=-300)
+    searcher = AdversarialSearcher(evaluator, NoHumans())  # type: ignore[arg-type]
+    result = searcher.search(chess.Board(), SearchConfig(mode=EngineMode.OPPONENT_BOT))
+    assert result.move == chess.Move.from_uci("e2e4") and not result.is_trap and result.candidates == ()

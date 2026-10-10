@@ -46,7 +46,7 @@ from src.engine.bot_factory import SKEW, STANDARD, build_book, for_humans
 from src.engine.policy_generator import load_proposer
 from src.engine.search import AdversarialSearcher, TerminalPositionError
 from src.lichess.time_manager import AdaptivePacingController, Cadence, TimeManager, clock_seconds
-from src.types import MoveSource
+from src.types import EngineMode, MoveSource
 
 __all__ = ["BotConfig", "LichessBot", "LichessClient", "RatingAdaptiveModel", "main"]
 
@@ -679,7 +679,9 @@ class LichessBot:
         if pacing and 0 < their_clock < self.pacing.opponent_scramble_seconds:
             # A wait cannot make a slow search fast; a cheaper profile can.
             search_config = self.time_manager.profiles[min(1, len(self.time_manager.profiles) - 1)].config
-        if self.config.psychological and not session.opponent_bot:
+        if session.opponent_bot:
+            search_config = replace(search_config, mode=EngineMode.OPPONENT_BOT)
+        elif self.config.psychological:
             search_config = for_humans(search_config)
             if 0 < their_clock < LOW_CLOCK_SECONDS:
                 search_config = replace(

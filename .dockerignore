@@ -1,0 +1,8 @@
+# Whitelist: the image needs the code, the policy weights and the pin list.
+# Everything else stays out -- above all .env, build/ (a 7.5 GB dump and the
+# game logs) and .venv.
+*
+!src/
+!models/*.pth
+!requirements.txt
+**/__pycache__

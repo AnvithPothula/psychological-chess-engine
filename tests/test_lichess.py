@@ -695,6 +695,9 @@ def test_humans_get_the_psychological_search_and_more_of_it_when_short_of_time()
     assert relaxed.narrow_path_weight == HUMAN_PLAY["narrow_path_weight"]
     assert short.narrow_path_weight == 2 * HUMAN_PLAY["narrow_path_weight"], "the human has 20s"
     assert relaxed.leaf_depth <= 6 and relaxed.root_depth <= 6, "not simply out-calculating them"
+    from src.types import EngineMode
+
+    assert relaxed.mode is EngineMode.OPPONENT_HUMAN
 
 
 def test_bots_get_the_conservative_search_and_no_trap_book() -> None:
@@ -708,6 +711,9 @@ def test_bots_get_the_conservative_search_and_no_trap_book() -> None:
     assert session.arm == "vs-bot" and bot.searcher.book is bot.books[SKEW.name]
     bot._advance(session, {"moves": "", "status": "started", "wtime": 300000, "btime": 20000})
     assert seen[0].narrow_path_weight == 0.0 and seen[0].winning_margin == 200
+    from src.types import EngineMode
+
+    assert seen[0].mode is EngineMode.OPPONENT_BOT, "the BOT title routes to objective play"
 
 
 

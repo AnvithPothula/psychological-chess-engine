@@ -61,6 +61,7 @@ from src.engine.cache import EvalCache, position_key
 from src.types import (
     CandidateStats,
     EngineEval,
+    EngineMode,
     MoveDistribution,
     MoveSource,
     PredictedReply,
@@ -365,6 +366,9 @@ class AdversarialSearcher:
         from_book = self._try_book(work, bot_color, settings, started)
         if from_book is not None:
             return from_book
+
+        if settings.mode is EngineMode.OPPONENT_BOT:
+            return self._objective_move(work, settings, started)
 
         root_scores, best_move = self._scan_root(work, bot_color, settings)
         candidates = self._select_candidates(root_scores, best_move, settings, board=work)
@@ -719,6 +723,29 @@ class AdversarialSearcher:
     def _to_bot(white_centipawns: int, bot_color: chess.Color) -> int:
         """The one place White-relative scores become bot-relative."""
         return white_centipawns if bot_color == chess.WHITE else -white_centipawns
+
+    def _objective_move(self, board: chess.Board, settings: SearchConfig, started: float) -> SearchResult:
+        """Stockfish's best move at the deeper of the config's two depths.
+
+        One line, not a MultiPV scan: with no human model there is nothing to
+        compare candidates on but the engine's own ranking, and its first line
+        is that ranking's top. Same evaluator as the human mode, so the two
+        share one warm Stockfish; the bridge plays one game at a time.
+        """
+        depth = max(settings.root_depth, settings.leaf_depth)
+        move, score = _rank_mover_relative(
+            self.evaluator.analyse_root_moves(board, depth=depth, multipv=1), board.turn
+        )[0]
+        return SearchResult(
+            move=move,
+            expected_utility=float(score),
+            is_trap=False,
+            fallback_triggered=False,
+            candidates=(),
+            nodes_evaluated=1,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            source=MoveSource.SEARCH,
+        )
 
     @staticmethod
     def _terminal_bot_score(board: chess.Board, bot_color: chess.Color) -> Optional[int]:
