@@ -81,10 +81,6 @@ class MoveFeatures:
         ]
 
 
-FEATURE_WIDTH: Final[int] = 4
-"""Length of :meth:`MoveFeatures.as_vector`."""
-
-
 def _features(
     ranked: List[Tuple[chess.Move, int]], move: chess.Move
 ) -> Optional[MoveFeatures]:

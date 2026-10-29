@@ -105,7 +105,6 @@ EVAL_BAR_DEPTH: Final[int] = 10
 engine time with the search that decides the actual move."""
 
 UTILITY_METER_CLAMP_CP: Final[float] = 400.0
-TOP_REPLIES_SHOWN: Final[int] = 3
 TRAINING_WINDOW_TITLE: Final[str] = "Self-Play Trap Mining"
 
 # --- tabs and controls -----------------------------------------------------
@@ -113,7 +112,6 @@ TAB_BAR_HEIGHT: Final[int] = 34
 TAB_GAP: Final[int] = 6
 TAB_CORNER_RADIUS: Final[int] = 6
 CONTROL_HEIGHT: Final[int] = 32
-CONTROL_GAP: Final[int] = 10
 CONTROL_CORNER_RADIUS: Final[int] = 6
 STEPPER_BUTTON_WIDTH: Final[int] = 34
 

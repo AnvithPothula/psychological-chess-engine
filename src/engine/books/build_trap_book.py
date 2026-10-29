@@ -57,9 +57,6 @@ CEILINGS_PATH: Final[Path] = BOOKS_DIR / "trap_ceilings.json"
 """Empirical ceilings from ``trueelo_scraper``. Defined here rather than there so
 the scraper can import it without this module importing the scraper back."""
 
-OFF_EVERYWHERE: Final[int] = 0
-"""Ceiling for a line the data says never pays: below every rating band."""
-
 RATING_BANDS: Final[Tuple[int, ...]] = config.AVAILABLE_MAIA_RATINGS
 """Shared with the Maia checkpoints: a band *is* a Maia model."""
 ALL_BANDS: Final[int] = (1 << len(RATING_BANDS)) - 1
@@ -74,11 +71,6 @@ MIN_TRAP_PAYOFF_CP: Final[int] = 25
 this. Calibrated against the Lichess breakpoints rather than picked: the
 Stafford scores 72.3% at 0-999 and 41.9% at 1800-1999 over 1.8M games, so it
 should switch off in the high 1700s, and 25cp is the bar that puts it there."""
-
-WIN_MARGIN_CP: Final[int] = 300
-"""Once the position is worth this much against *best* defence, the trap has
-already worked. A trap needs the victim to err once, not to keep cooperating to
-the final mate, so the rollout banks its winnings here and stops."""
 
 SMOOTHING_WINDOW: Final[int] = 3
 """Bands averaged with their neighbours before thresholding. The Maia-2 paper
@@ -376,11 +368,6 @@ def _roll_out(
         board.push(move)
 
     return value, biting, worst_objective
-
-
-def entry_id(key: int, raw_move: int) -> str:
-    """Stable JSON-safe identifier for one book entry."""
-    return f"{key:016x}:{raw_move:04x}"
 
 
 def _mask_from_ceiling(ceiling: int) -> int:

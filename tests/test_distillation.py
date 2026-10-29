@@ -40,7 +40,6 @@ from src.types import MoveDistribution, SearchConfig
 from tests.test_search import ScriptedEvaluator, ScriptedHumanModel
 
 WARM_CHECKPOINT = Path("models/policy_warm.pth")
-CORPUS = Path("build/distill_corpus.npz")
 
 
 class ScriptedMaia:
