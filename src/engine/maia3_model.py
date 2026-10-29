@@ -24,19 +24,19 @@ needed and has been removed with this model.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from collections import deque
-from typing import Any, Deque, Dict, Final, List, Optional
+from typing import Any, Deque, Dict, Final, List, Mapping, Optional
 
 import chess
 import torch
 
 from src import config
 from src.engine import EvaluatorError
-from src.engine.maia import temperature_softmax
 from src.types import MoveDistribution
 
-__all__ = ["Maia3Evaluator", "MAIA3_MAX_RATING"]
+__all__ = ["Maia3Evaluator", "MAIA3_MAX_RATING", "temperature_softmax"]
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,33 @@ _DEFAULT_MODEL: Final[str] = "maia3-5m"
 """5M reaches 55.4% move-matching against Maia-2's 52.0%, and runs on CPU in
 3.4ms. The 23M and 79M variants buy roughly one more point for several times
 the latency, which a per-node opponent model cannot afford."""
+
+
+def temperature_softmax(priors: Mapping[chess.Move, float], temperature: float) -> Dict[chess.Move, float]:
+    """Temperature-scaled softmax over move priors, returned normalised to 1.0.
+
+    The priors are already probabilities, so the softmax is taken over their
+    logits: ``softmax(log(p) / T)``, equivalently ``p^(1/T)`` renormalised.
+    ``T == 1.0`` is therefore the identity and preserves Maia's calibration;
+    ``T > 1`` flattens the opponent model, ``T < 1`` sharpens it. Applying a
+    plain softmax to the probabilities themselves would destroy the calibration.
+    """
+    if temperature <= 0.0:
+        raise ValueError(f"temperature must be positive, got {temperature}")
+    if not priors:
+        raise ValueError("temperature_softmax requires at least one move")
+
+    logits = {
+        move: (math.log(prior) / temperature if prior > 0.0 else -math.inf)
+        for move, prior in priors.items()
+    }
+    peak = max(logits.values())
+    if not math.isfinite(peak):
+        raise ValueError("All move priors were zero")
+
+    weights = {move: math.exp(logit - peak) for move, logit in logits.items()}
+    total = math.fsum(weights.values())
+    return {move: weight / total for move, weight in weights.items()}
 
 
 class Maia3Evaluator:

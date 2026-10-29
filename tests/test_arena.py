@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from src.engine.bot_factory import (
-    ARENA_SEARCH, ARMS, BASELINE, SKEW, STANDARD, TRAP, BotSpec,
+    ARMS, BASELINE, SKEW, STANDARD, TRAP, BotSpec,
 )
 from src.eval.arena import (
     DECISIVE_CP, ERROR_CAP, GameResult, _chunks, safe_workers, summarise,

@@ -1,28 +1,17 @@
 # pip install -r requirements.txt
 
-# (brew install stockfish lc0) and put the Maia weights in models/.
+# Also needs Stockfish (brew install stockfish).
 
 berserk==0.14.0        # Lichess bot API client
 chess==1.11.2          # board, move generation, UCI, polyglot books
-numpy==2.5.3           # distillation corpus as memory-mapped arrays
-pygame==2.6.1          # desktop UI
+numpy==2.5.3           # Maia-3 and torch tensors
 requests==2.34.2       # book calibration scraping, berserk transport
-torch==2.14.0          # TrapPolicyNet: distillation, DPO, inference
+torch==2.14.0          # Maia-3 and TrapPolicyNet inference
 certifi==2026.7.22     # explicit TLS roots for the Lichess stream
-
-# Maia-2 opponent model. Its own pins are stale (torch==2.8.0, an old pyzstd
-# with no Python 3.13 wheel), so install it without them:
-#   pip install --no-deps maia2
-#   pip install 'pyzstd>=0.19' gdown einops
-# The ~280MB checkpoint downloads on first use into maia2_models/ (gitignored).
-maia2==0.10.0
-pyzstd==0.19.1
-gdown==6.2.0
-einops==0.8.2
+pyzstd==0.19.1         # reads the .zst Lichess database dumps
 
 # Maia-3 is the opponent model in use: continuous rating, no ceiling. It is not
 # on PyPI and is AGPL-3.0, unlike the MIT packages above:
 #   git clone https://github.com/CSSLab/maia3 && pip install ./maia3
 #   maia3-cache --model maia3-5m
-# Maia-2 is kept for the distillation corpus and as a fallback.
 # maia3==0.1.0  (install from source, see above)

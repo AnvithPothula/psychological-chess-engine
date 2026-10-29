@@ -21,7 +21,7 @@ from berserk import models
 from berserk.exceptions import ResponseError
 
 from src import config as engine_config
-from src.engine.maia import MaiaEvaluator
+from src.engine.maia3_model import Maia3Evaluator
 from src.engine.search import AdversarialSearcher
 from src.engine.stockfish import StockfishEvaluator
 from src.lichess.bot import BotConfig, LichessBot
@@ -234,7 +234,7 @@ def test_profile_ladder_degrades_as_the_clock_drains() -> None:
 
 def test_profile_budgets_hold_on_this_machine() -> None:
     """Calibration: every profile must fit the budget the ladder promises."""
-    with StockfishEvaluator() as stockfish, MaiaEvaluator(rating=1100) as maia:
+    with StockfishEvaluator() as stockfish, Maia3Evaluator(rating=1100) as maia:
         searcher = AdversarialSearcher(stockfish, maia)
         searcher.search(chess.Board())  # warm the engines
 
@@ -269,23 +269,20 @@ def test_nearest_maia_rating_maps_and_clamps() -> None:
 
 
 def test_maia_rating_swap_changes_a_repeated_position() -> None:
-    """Regression: setting WeightsFile alone is a no-op on positions already seen.
-
-    Lc0 keeps serving the old network until a ucinewgame, so the probe below
-    deliberately evaluates the *same* position before and after the swap.
-    """
+    """A rating change must take effect on a position the model has already seen,
+    so the probe evaluates the *same* position before and after the swap."""
     board = chess.Board("r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3")
-    with MaiaEvaluator(rating=1100) as maia:
+    with Maia3Evaluator(rating=1100) as maia:
         weak = maia.predict_move_probabilities(board)
         maia.set_rating(1900)
         assert maia.rating == 1900
         strong = maia.predict_move_probabilities(board)
 
         weak_top = weak.most_likely
-        assert weak.probabilities != strong.probabilities, "weights swap did not take effect"
+        assert weak.probabilities != strong.probabilities, "rating swap did not take effect"
         blunder = next(m for m in board.legal_moves if board.san(m) == "Nf6")
         assert weak[blunder] > strong[blunder], "the weaker model must blunder more often"
-        print(f"    maia-1100 Nf6={weak[blunder]:.1%} -> maia-1900 Nf6={strong[blunder]:.1%} "
+        print(f"    1100 Nf6={weak[blunder]:.1%} -> 1900 Nf6={strong[blunder]:.1%} "
               f"(top move {board.san(weak_top)})")
 
         maia.set_rating(1100)

@@ -62,7 +62,6 @@ def _clamp(cp: int) -> int:
 
 def review_game(game: Mapping[str, Any], depth: int = DEPTH) -> Dict[str, Any]:
     """Every ply scored from the mover's side. Runs in a worker with its own Stockfish."""
-    from src.engine.search import _rank_mover_relative
     from src.engine.stockfish import StockfishEvaluator
 
     logging.basicConfig(level=logging.WARNING)

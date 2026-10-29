@@ -5,7 +5,7 @@ Runs under pytest, or standalone with no test dependencies:
     python -m tests.test_evaluators
 
 Both evaluators spawn real engine processes, so these are integration tests:
-they need the ``stockfish`` and ``lc0`` binaries and the Maia weights present.
+they need the ``stockfish`` binary and the cached Maia-3 weights.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import math
 
 import chess
 
-from src.engine.maia import MaiaEvaluator, temperature_softmax
+from src.engine.maia3_model import Maia3Evaluator, temperature_softmax
 from src.engine.stockfish import StockfishEvaluator
 from src.types import EngineEval, MoveDistribution, win_probability
 
@@ -104,7 +104,7 @@ def test_stockfish_evaluates_positions() -> None:
 
 
 def test_maia_returns_legal_normalised_distribution() -> None:
-    with MaiaEvaluator(rating=1100) as maia:
+    with Maia3Evaluator(rating=1100) as maia:
         board = chess.Board(STARTING_FEN)
         opening = maia.predict_move_probabilities(board)
         _assert_valid_distribution(opening, board)

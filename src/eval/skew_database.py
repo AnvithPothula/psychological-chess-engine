@@ -47,7 +47,7 @@ from typing import IO, Any, BinaryIO, Callable, Dict, Final, Iterator, List, Map
 
 import chess
 
-from src.eval.live_analyzer import GameStats, read_jsonl, score_game
+from src.eval.live_analyzer import read_jsonl, score_game
 
 __all__ = ["iter_games", "iter_raw_games", "scan", "mh_difference", "report", "main"]
 

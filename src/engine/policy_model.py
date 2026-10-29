@@ -2,8 +2,7 @@
 
 One module owns both the tensor layout and the model, because every shape
 mismatch in a pipeline like this comes from two files disagreeing about the
-encoding. The generator, the trainer and the inference wrapper all import the
-constants from here; none of them writes a literal ``8`` or ``4096``.
+encoding. The inference wrapper and the tests import the constants from here; none of them writes a literal ``8`` or ``4096``.
 
 Move encoding is ``from_square * 64 + to_square``. Promotions collapse onto the
 same index as the non-promotion move between those squares, so the head cannot
@@ -16,7 +15,7 @@ of a much larger head for a case that arises in well under 1% of positions.
 
 from __future__ import annotations
 
-from typing import Final, List, Optional, Sequence, Tuple
+from typing import Final, List, Sequence
 
 import chess
 import torch
@@ -28,7 +27,6 @@ __all__ = [
     "POLICY_SIZE",
     "TrapPolicyNet",
     "encode_board",
-    "encode_batch",
     "legal_move_mask",
     "move_to_index",
     "index_to_moves",
@@ -123,18 +121,6 @@ def encode_board(board: chess.Board, rating: int) -> torch.Tensor:
     return planes
 
 
-def encode_batch(
-    boards: Sequence[chess.Board], ratings: Sequence[int], device: Optional[torch.device] = None
-) -> torch.Tensor:
-    """``[B, INPUT_PLANES, 8, 8]`` for a batch of positions."""
-    if len(boards) != len(ratings):
-        raise ValueError(f"{len(boards)} boards but {len(ratings)} ratings")
-    if not boards:
-        return torch.zeros((0, INPUT_PLANES, BOARD_SIZE, BOARD_SIZE), dtype=torch.float32)
-    stacked = torch.stack([encode_board(board, rating) for board, rating in zip(boards, ratings)])
-    return stacked.to(device) if device is not None else stacked
-
-
 def legal_move_mask(board: chess.Board) -> torch.Tensor:
     """``[POLICY_SIZE]`` boolean mask; True where a legal move lands."""
     mask = torch.zeros(POLICY_SIZE, dtype=torch.bool)
@@ -158,73 +144,6 @@ class ResidualBlock(nn.Module):
         out = F.relu(self.norm1(self.conv1(x)))
         out = self.norm2(self.conv2(out))
         return F.relu(out + residual)
-
-
-ENGINE_FEATURE_WIDTH: Final[int] = 4
-"""Per-move engine evidence: scaled centipawns, scaled loss against best,
-fractional rank, and a top-choice flag. Produced by ``src.training.annotate``."""
-
-SCORER_INPUT_WIDTH: Final[int] = ENGINE_FEATURE_WIDTH + 1
-"""The engine features plus the frozen CNN's logit for the same move."""
-
-
-class TrapScorer(nn.Module):
-    """Late-fusion re-ranker: one scalar adjustment per candidate move.
-
-    The convolutional network has to deduce tactics from board geometry alone,
-    and the capacity sweep showed what that costs -- preference accuracy rose
-    with width right up to the point where the distilled representation started
-    collapsing again. Matilda's ablation says the missing ingredient is not
-    parameters but *evidence*: a centipawn score, a loss against best and a rank
-    for each candidate, which a search already computed and the network was
-    never shown.
-
-    So this reads the prior's own logit for a move alongside that move's engine
-    features and returns a modifier. The final linear layer is zeroed, so an
-    untrained scorer returns exactly zero and the fused score is the distilled
-    prior unchanged -- the same guarantee the residual head carries, and the
-    reason displacement cannot start from here.
-    """
-
-    def __init__(self, hidden: int = 96, layers: int = 2) -> None:
-        super().__init__()
-        if hidden < 1:
-            raise ValueError(f"hidden must be >= 1, got {hidden}")
-        if layers < 1:
-            raise ValueError(f"layers must be >= 1, got {layers}")
-
-        stack: List[nn.Module] = []
-        width = SCORER_INPUT_WIDTH
-        for _ in range(layers):
-            stack.append(nn.Linear(width, hidden))
-            stack.append(nn.ReLU(inplace=True))
-            width = hidden
-        output = nn.Linear(width, 1)
-        nn.init.zeros_(output.weight)
-        assert output.bias is not None
-        nn.init.zeros_(output.bias)
-        stack.append(output)
-        self.stack = nn.Sequential(*stack)
-
-    def forward(self, prior_logit: torch.Tensor, features: torch.Tensor) -> torch.Tensor:
-        """``[B]`` prior logits and ``[B, 4]`` engine features -> ``[B]`` modifiers."""
-        if prior_logit.dim() != 1:
-            raise ValueError(f"expected prior_logit [B], got {tuple(prior_logit.shape)}")
-        if features.dim() != 2 or features.shape[1] != ENGINE_FEATURE_WIDTH:
-            raise ValueError(
-                f"expected features [B, {ENGINE_FEATURE_WIDTH}], got {tuple(features.shape)}"
-            )
-        if features.shape[0] != prior_logit.shape[0]:
-            raise ValueError(
-                f"batch mismatch: {prior_logit.shape[0]} logits, {features.shape[0]} features"
-            )
-        fused = torch.cat([prior_logit.unsqueeze(1), features], dim=1)
-        modifier: torch.Tensor = self.stack(fused).squeeze(1)
-        return modifier
-
-    @property
-    def parameter_count(self) -> int:
-        return sum(parameter.numel() for parameter in self.parameters())
 
 
 class TrapPolicyNet(nn.Module):
@@ -284,7 +203,6 @@ class TrapPolicyNet(nn.Module):
         assert final.bias is not None
         nn.init.zeros_(final.bias)
 
-        self._frozen: Tuple[nn.Module, ...] = ()
 
     def trunk(self, x: torch.Tensor) -> torch.Tensor:
         """Distilled feature extractor: ``[B, planes, 8, 8]`` -> ``[B, C, 8, 8]``."""
@@ -300,47 +218,6 @@ class TrapPolicyNet(nn.Module):
         features = self.trunk(x)
         logits: torch.Tensor = (self.policy(features) + self.residual(features)).flatten(start_dim=1)
         return logits
-
-    # -- alignment ----------------------------------------------------------
-
-    def freeze_prior(self, *, include_policy: bool = True) -> None:
-        """Hold the distilled representation still.
-
-        Always freezes the convolutional trunk, which is the only chess
-        knowledge in the system. ``include_policy`` also freezes the distilled
-        policy head; releasing it adds parameters but, when the residual is a
-        bare 1x1 convolution, no expressive power at all -- two 1x1 convolutions
-        over the same features sum to one 1x1 convolution.
-
-        Clearing ``requires_grad`` is necessary and not sufficient: the trunk's
-        BatchNorm layers keep updating their running statistics in training
-        mode, which drifts the prior even when no gradient reaches it. Frozen
-        modules are therefore pinned to eval, and ``train()`` is overridden so a
-        later ``model.train()`` cannot quietly undo it.
-        """
-        self._frozen = (self.stem, self.tower, self.policy) if include_policy else (
-            self.stem, self.tower
-        )
-        for module in self._frozen:
-            for parameter in module.parameters():
-                parameter.requires_grad_(False)
-            module.eval()
-
-    def train(self, mode: bool = True) -> "TrapPolicyNet":
-        super().train(mode)
-        for module in self._frozen:
-            module.eval()
-        return self
-
-    @property
-    def residual_parameters(self) -> List[nn.Parameter]:
-        """The only parameters DPO is allowed to move once the prior is frozen."""
-        return list(self.residual.parameters())
-
-    @property
-    def trainable_parameters(self) -> List[nn.Parameter]:
-        """Everything still carrying a gradient after ``freeze_prior``."""
-        return [parameter for parameter in self.parameters() if parameter.requires_grad]
 
     @property
     def parameter_count(self) -> int:

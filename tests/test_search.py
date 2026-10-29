@@ -17,14 +17,13 @@ import math
 import time
 from typing import Any, Dict, List, Mapping, Optional
 
-from src import config as engine_config
 
 import chess
 import pytest
 
 from src.config import MATE_SCORE_CP
 from src.engine.cache import EvalCache, position_key
-from src.engine.maia import MaiaEvaluator
+from src.engine.maia3_model import Maia3Evaluator
 from src.engine.search import (
     AdversarialSearcher, blunder_potential, gambit_floor, selection_score,
     TerminalPositionError, truncate_distribution,
@@ -90,7 +89,7 @@ class ScriptedEvaluator:
 
 
 class ScriptedHumanModel:
-    """Stand-in for ``MaiaEvaluator``; uniform over legal moves when unscripted."""
+    """Stand-in for ``Maia3Evaluator``; uniform over legal moves when unscripted."""
 
     def __init__(self, replies: Mapping[str, Mapping[str, float]]) -> None:
         self.replies = {fen: dict(moves) for fen, moves in replies.items()}
@@ -352,7 +351,7 @@ def test_terminal_candidate_is_scored_without_engine_calls() -> None:
 
 
 def test_integration_against_real_engines() -> None:
-    with StockfishEvaluator() as stockfish, MaiaEvaluator(rating=1100) as maia:
+    with StockfishEvaluator() as stockfish, Maia3Evaluator(rating=1100) as maia:
         searcher = AdversarialSearcher(stockfish, maia)
         board = chess.Board(SCHOLARS_THREAT_FEN)
         result = searcher.search(board)
@@ -365,7 +364,7 @@ def test_integration_against_real_engines() -> None:
 
 
 def test_two_ply_search_stays_within_the_time_budget() -> None:
-    with StockfishEvaluator() as stockfish, MaiaEvaluator(rating=1100) as maia:
+    with StockfishEvaluator() as stockfish, Maia3Evaluator(rating=1100) as maia:
         searcher = AdversarialSearcher(stockfish, maia)
         # Warm the engines: first-call weight loading and backend init are not
         # part of per-move cost in a real game.
@@ -384,7 +383,7 @@ def test_two_ply_search_stays_within_the_time_budget() -> None:
 
 
 def test_cache_absorbs_repeated_searches() -> None:
-    with StockfishEvaluator() as stockfish, MaiaEvaluator(rating=1100) as maia:
+    with StockfishEvaluator() as stockfish, Maia3Evaluator(rating=1100) as maia:
         searcher = AdversarialSearcher(stockfish, maia)
         board = chess.Board(ITALIAN_FEN)
         first = searcher.search(board)

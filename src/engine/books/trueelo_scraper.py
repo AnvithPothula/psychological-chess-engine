@@ -50,7 +50,6 @@ from src import config
 from src.engine.books.build_trap_book import (
     BOOKS_DIR,
     CEILINGS_PATH,
-    RATINGS_PATH,
     RATING_BANDS,
     TRAP_LINES,
     TrapLine,

@@ -16,9 +16,9 @@ from typing import Any, Final, Iterator, Mapping, Optional
 
 from src.engine.book import OpeningBook
 from src.engine.maia3_model import Maia3Evaluator
+from src.engine.policy_generator import WARM_CHECKPOINT
 from src.engine.search import AdversarialSearcher, CandidateProposer
 from src.engine.stockfish import StockfishEvaluator
-from src.training.train_dpo import WARM_CHECKPOINT
 from src.types import SearchConfig
 
 __all__ = [

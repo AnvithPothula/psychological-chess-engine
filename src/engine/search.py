@@ -93,7 +93,7 @@ class PositionEvaluator(Protocol):
 
 
 class HumanModel(Protocol):
-    """Opponent move-likelihood source. Implemented by ``MaiaEvaluator``."""
+    """Opponent move-likelihood source. Implemented by ``Maia3Evaluator``."""
 
     def predict_move_probabilities(
         self, board: chess.Board, *, temperature: Optional[float] = ...
@@ -309,7 +309,7 @@ class AdversarialSearcher:
     Evaluators are injected; the searcher owns neither process lifecycle. Callers
     are responsible for closing them (both support the context-manager protocol)::
 
-        with StockfishEvaluator() as sf, MaiaEvaluator(1500) as maia:
+        with StockfishEvaluator() as sf, Maia3Evaluator(1500) as maia:
             searcher = AdversarialSearcher(sf, maia)
             result = searcher.search(board)
     """

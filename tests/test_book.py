@@ -15,19 +15,18 @@ import random
 import tempfile
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import chess
 import chess.polyglot
 
 from src import config as engine_config
-from src.engine.book import BookMove, OpeningBook
+from src.engine.book import OpeningBook
 from src.engine.books.build_trap_book import (
     ALL_BANDS,
     RATING_BANDS,
     TRAP_LINES,
     compile_lines,
-    eligible_bands,
     polyglot_raw_move,
     smooth,
     write_book,

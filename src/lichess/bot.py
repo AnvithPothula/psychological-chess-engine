@@ -2,10 +2,10 @@
 
 **One game at a time, deliberately.** The bridge declines challenges while a
 game is running. This is not a simplification, it is a correctness requirement:
-the opponent model is per-game state (``MaiaEvaluator.set_rating``) living on a
-single process-wide Lc0 instance, and Stockfish is likewise one process. Two
-concurrent games would silently swap each other's Maia weights mid-search --
-game A against a 1200 would start using the 1900 model the moment game B began,
+the opponent model is per-game state (``Maia3Evaluator.set_rating``) living on a
+single process-wide model, and Stockfish is likewise one process. Two
+concurrent games would silently swap each other's opponent ratings mid-search --
+game A against a 1200 would start modelling a 1900 the moment game B began,
 with nothing in the logs to show for it. Serving one game also keeps move
 latency predictable, which is what stops us flagging.
 

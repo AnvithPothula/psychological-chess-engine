@@ -25,7 +25,7 @@ import chess
 import torch
 import torch.nn.functional as F
 
-from src.training.model import (
+from src.engine.policy_model import (
     INPUT_PLANES,
     POLICY_SIZE,
     TrapPolicyNet,
@@ -41,6 +41,8 @@ __all__ = ["NeuralCandidateGenerator", "PolicyUnavailableError", "load_proposer"
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHECKPOINT: Final[Path] = Path("models/trap_policy.pth")
+WARM_CHECKPOINT: Final[Path] = Path("models/policy_warm.pth")
+"""The distilled prior, before DPO. The trap arm proposes from it."""
 DEFAULT_TOP_K: Final[int] = 5
 
 
@@ -55,8 +57,7 @@ def _select_device(preference: Optional[str]) -> torch.device:
     308k-parameter network the accelerator loses: measured on an M4, MPS runs
     1.64ms per board steady-state and 9.09ms over the first ten calls, against
     0.68ms and 0.77ms on CPU. Kernel-launch overhead dominates when there is no
-    batch to amortise it over. Training, which is batched, still picks the
-    accelerator -- see ``train_dpo.select_device``.
+    batch to amortise it over.
     """
     if preference:
         return torch.device(preference)
@@ -85,7 +86,8 @@ class NeuralCandidateGenerator:
     def _load(path: Path, device: torch.device) -> TrapPolicyNet:
         if not path.exists():
             raise PolicyUnavailableError(
-                f"no checkpoint at {path}; run python -m src.training.train_dpo"
+                f"no checkpoint at {path}; the trainer that wrote it is in git history "
+                "before the cleanup that removed src/training/train_dpo.py"
             )
         try:
             payload: Dict[str, Any] = torch.load(path, map_location=device, weights_only=True)
